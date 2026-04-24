@@ -1,0 +1,28 @@
+[package]
+name = "blindeye"
+version = "0.1.0"
+edition = "2021"
+description = "BlindEye (BEC) reference implementation for a privacy-preserving GPU-friendly Proof-of-Work cryptocurrency."
+license = "MIT"
+authors = ["BlindEye Collective <contact@blindeye.example>"]
+repository = ""
+
+[dependencies]
+aes-gcm = "0.10"
+argon2 = "0.5"
+bincode = "1.3"
+bip39 = "2.2"
+blake3 = "1.4"
+bytes = "1.5"
+clap = { version = "4.3", features = ["derive"] }
+eframe = "0.28"
+hex = "0.4"
+image = "0.25"
+qrcode = "0.13"
+rand = "0.8"
+secp256k1 = { version = "0.29", features = ["rand"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.35", features = ["full"] }
+thiserror = "1.0"
+zeroize = "1.7"

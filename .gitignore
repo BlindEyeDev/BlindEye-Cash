@@ -1,0 +1,25 @@
+target/
+**/*.rs.bk
+Cargo.lock
+.DS_Store
+blindeye-node-state.bin
+blindeye-wallet-state.json
+*.msix
+build-artifacts/
+.idea/
+.vscode/settings.json
+.env
+.env.local
+*.swp
+*.swo
+*~
+
+# Development/internal documentation (not for git)
+CURRENT_PROJECT_OVERVIEW.md
+NEXT_STEPS.md
+P2P_AND_MSIX_IMPLEMENTATION.md
+P2P_AND_MSIX_QUICK_START.md
+GENESIS_AND_BOOTSTRAP_AUDIT.md
+blindeye-wallet-state.json
+blindeye-node-state.bin
+blindeye-wallet-backup.json
