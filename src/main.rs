@@ -4,11 +4,13 @@ mod mempool;
 mod mining;
 mod network;
 mod node;
+mod paths;
 mod p2p;
 mod pow;
 mod privacy;
 mod protocol;
 mod rpc;
+mod rpc_registry;
 mod transaction;
 mod wallet;
 
@@ -16,17 +18,20 @@ use clap::{Parser, Subcommand};
 use eframe::egui;
 use blockchain::{WalletTransactionDirection, WalletTransactionRecord};
 use mining::MiningSettings;
-use node::{Node, DEFAULT_NODE_STATE_PATH};
+use node::{default_node_state_path, Node};
 use p2p::P2PManager;
 use protocol::{format_bec_amount, parse_bec_amount};
 use qrcode::{render::unicode, QrCode};
+use rpc_registry::PublicRpcEndpoint;
 use std::f32::consts::TAU;
-use std::path::Path;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use wallet::{TransactionPreview, Wallet, DEFAULT_WALLET_BACKUP_PATH, DEFAULT_WALLET_STATE_PATH};
+use wallet::{
+    default_wallet_backup_path, default_wallet_state_path, TransactionPreview, Wallet,
+};
 
 const COLOR_NEAR_BLACK: egui::Color32 = egui::Color32::from_rgb(7, 10, 19);
 const COLOR_CHARCOAL: egui::Color32 = egui::Color32::from_rgb(16, 23, 37);
@@ -41,7 +46,7 @@ const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(144, 166, 196);
 
 #[derive(Parser)]
 #[command(name = "blindeye")]
-#[command(about = "BlindEye (BEC) - local wallet and miner", long_about = None)]
+#[command(about = "BlindEye (BEC) - wallet, node, miner", long_about = None)]
 struct Cli {
     #[command(subcommand)]
     command: Option<Commands>,
@@ -80,12 +85,12 @@ enum WalletAction {
         fee: String,
     },
     Backup {
-        #[arg(value_name = "PATH", default_value = DEFAULT_WALLET_BACKUP_PATH)]
-        path: String,
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
     },
     Restore {
-        #[arg(value_name = "PATH", default_value = DEFAULT_WALLET_BACKUP_PATH)]
-        path: String,
+        #[arg(value_name = "PATH")]
+        path: Option<String>,
     },
     ImportSeed {
         #[arg(value_name = "SEED_PHRASE")]
@@ -154,14 +159,16 @@ fn handle_cli(command: Commands) -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn handle_wallet_cli(action: WalletAction) -> Result<(), Box<dyn std::error::Error>> {
+    let wallet_state_path = default_wallet_state_path();
+
     match action {
         WalletAction::New => {
             let wallet = Wallet::new();
             let password = prompt_password("Enter password to protect wallet: ")?;
-            wallet.save_to_file(DEFAULT_WALLET_STATE_PATH, &password)?;
+            wallet.save_to_file(&wallet_state_path, &password)?;
             println!(
                 "New wallet created and saved to {}",
-                DEFAULT_WALLET_STATE_PATH
+                wallet_state_path.display()
             );
             println!("Address: {}", wallet.address);
             println!(
@@ -173,20 +180,20 @@ fn handle_wallet_cli(action: WalletAction) -> Result<(), Box<dyn std::error::Err
         WalletAction::Info => {
             let password = prompt_password("Enter wallet password: ")?;
             let node = load_or_create_node()?;
-            let mut wallet = Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &password)?;
+            let mut wallet = Wallet::load_or_create_state(&wallet_state_path, &password)?;
             let blockchain = node.blockchain.lock().unwrap();
             wallet.sync_balance(&blockchain);
             println!("Wallet Address: {}", wallet.address);
             println!("Balance: {} BEC", wallet.balance_bec());
             println!("Transactions: {}", wallet.transactions.len());
-            println!("Wallet State: {}", DEFAULT_WALLET_STATE_PATH);
+            println!("Wallet State: {}", wallet_state_path.display());
             println!("Blockchain State: {}", node.storage_path.as_ref().display());
             Ok(())
         }
         WalletAction::Send { to, amount, fee } => {
             let password = prompt_password("Enter wallet password: ")?;
             let node = load_or_create_node()?;
-            let wallet = Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &password)?;
+            let wallet = Wallet::load_or_create_state(&wallet_state_path, &password)?;
             let amount_units = parse_bec_amount(&amount)?;
             let fee_units = parse_bec_amount(&fee)?;
             let transaction = {
@@ -201,26 +208,28 @@ fn handle_wallet_cli(action: WalletAction) -> Result<(), Box<dyn std::error::Err
         }
         WalletAction::Backup { path } => {
             let password = prompt_password("Enter wallet password: ")?;
-            let wallet = Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &password)?;
-            wallet.save_to_file(&path, &password)?;
-            println!("Saved wallet backup to {}", path);
+            let backup_path = path.map(PathBuf::from).unwrap_or_else(default_wallet_backup_path);
+            let wallet = Wallet::load_or_create_state(&wallet_state_path, &password)?;
+            wallet.save_to_file(&backup_path, &password)?;
+            println!("Saved wallet backup to {}", backup_path.display());
             println!("Address: {}", wallet.address);
             Ok(())
         }
         WalletAction::Restore { path } => {
+            let backup_path = path.map(PathBuf::from).unwrap_or_else(default_wallet_backup_path);
             let password = prompt_password("Enter password for backup file: ")?;
-            let wallet = Wallet::load_from_file(&path, &password)?;
+            let wallet = Wallet::load_from_file(&backup_path, &password)?;
             let new_password = prompt_password("Enter new password to protect wallet: ")?;
-            wallet.save_to_file(DEFAULT_WALLET_STATE_PATH, &new_password)?;
-            println!("Restored wallet from {}", path);
+            wallet.save_to_file(&wallet_state_path, &new_password)?;
+            println!("Restored wallet from {}", backup_path.display());
             println!("Address: {}", wallet.address);
             Ok(())
         }
         WalletAction::ImportSeed { seed_phrase } => {
             let wallet = Wallet::from_mnemonic(seed_phrase)?;
             let password = prompt_password("Enter password to protect wallet: ")?;
-            wallet.save_to_file(DEFAULT_WALLET_STATE_PATH, &password)?;
-            println!("Imported wallet seed to {}", DEFAULT_WALLET_STATE_PATH);
+            wallet.save_to_file(&wallet_state_path, &password)?;
+            println!("Imported wallet seed to {}", wallet_state_path.display());
             println!("Address: {}", wallet.address);
             Ok(())
         }
@@ -293,7 +302,7 @@ fn handle_node_cli(action: NodeAction) -> Result<(), Box<dyn std::error::Error>>
 fn handle_mining_cli(action: MiningAction) -> Result<(), Box<dyn std::error::Error>> {
     let password = prompt_password("Enter wallet password: ")?;
     let node = load_or_create_node()?;
-    let wallet = Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &password)?;
+    let wallet = Wallet::load_or_create_state(default_wallet_state_path(), &password)?;
 
     match action {
         MiningAction::Start { workers } => {
@@ -439,6 +448,9 @@ struct WalletApp {
     wallet_backup_path: String,
     rpc_bind_addr: String,
     rpc_advertise_url: String,
+    rpc_registry_url: String,
+    auto_publish_rpc: bool,
+    discovered_public_rpcs: Vec<PublicRpcEndpoint>,
     mining_worker_count: String,
     mine_empty_blocks: bool,
     message: String,
@@ -484,25 +496,26 @@ struct PendingTransfer {
 
 impl Default for WalletApp {
     fn default() -> Self {
-        let wallet_state_exists = Path::new(DEFAULT_WALLET_STATE_PATH).exists();
+        let wallet_state_path = default_wallet_state_path();
+        let wallet_backup_path = default_wallet_backup_path();
+        let wallet_state_exists = wallet_state_path.exists();
         let node = load_or_create_node().unwrap_or_else(|_| Node::in_memory(None));
         let initial_status = node.get_status();
         let wallet_password = String::new();
         let wallet = if wallet_state_exists {
-            Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &wallet_password)
+            Wallet::load_or_create_state(&wallet_state_path, &wallet_password)
                 .unwrap_or_else(|_| Wallet::new())
         } else {
             Wallet::new()
         };
 
-        // Initialize P2P manager but defer async startup to background thread
         let node_arc = Arc::new(node.clone());
-        // GUI mode: listen on localhost for security; CLI mode accepts --listen parameter
-        let listen_addr: std::net::SocketAddr = "127.0.0.1:30303".parse().unwrap_or("127.0.0.1:30303".parse().unwrap());
+        let listen_addr: std::net::SocketAddr = "0.0.0.0:30303"
+            .parse()
+            .unwrap_or("0.0.0.0:30303".parse().unwrap());
         let p2p_manager = Arc::new(P2PManager::new(listen_addr, node_arc, 16));
         let p2p_manager_clone = p2p_manager.clone();
-        
-        // Spawn P2P listener in a background thread with its own tokio runtime
+
         std::thread::spawn(move || {
             let rt = tokio::runtime::Runtime::new().unwrap_or_else(|_| {
                 eprintln!("[P2P] Failed to create tokio runtime");
@@ -528,10 +541,13 @@ impl Default for WalletApp {
             seed_phrase_input: String::new(),
             show_seed_phrase: false,
             show_private_key: false,
-            wallet_state_path: DEFAULT_WALLET_STATE_PATH.to_string(),
-            wallet_backup_path: DEFAULT_WALLET_BACKUP_PATH.to_string(),
+            wallet_state_path: wallet_state_path.display().to_string(),
+            wallet_backup_path: wallet_backup_path.display().to_string(),
             rpc_bind_addr: "127.0.0.1:18443".to_string(),
             rpc_advertise_url: String::new(),
+            rpc_registry_url: std::env::var("BLINDEYE_RPC_REGISTRY_URL").unwrap_or_default(),
+            auto_publish_rpc: true,
+            discovered_public_rpcs: Vec::new(),
             mining_worker_count: MiningSettings::default().worker_count.to_string(),
             mine_empty_blocks: true,
             message: String::new(),
@@ -830,6 +846,53 @@ impl WalletApp {
         self.peer_count.max(status.connected_peers)
     }
 
+    fn refresh_public_rpc_registry(&mut self) {
+        match rpc_registry::fetch_public_rpcs(&self.rpc_registry_url) {
+            Ok(endpoints) => {
+                let count = endpoints.len();
+                self.discovered_public_rpcs = endpoints;
+                self.message = if count == 0 {
+                    "Registry checked successfully, but no open public RPC endpoints were reported."
+                        .to_string()
+                } else {
+                    format!("Loaded {} public RPC endpoint(s) from the registry.", count)
+                };
+            }
+            Err(err) => {
+                self.message = format!("Public RPC registry fetch failed: {}", err);
+            }
+        }
+    }
+
+    fn publish_current_rpc_to_registry(&mut self) -> Result<String, String> {
+        let rpc = self.node.rpc_server.snapshot();
+        if !rpc.active {
+            return Err("Start the RPC server before publishing it.".to_string());
+        }
+        if !rpc.allow_remote {
+            return Err(
+                "This RPC is localhost-only right now. Switch the bind to 0.0.0.0 before publishing."
+                    .to_string(),
+            );
+        }
+        if rpc.advertised_url.trim().is_empty() {
+            return Err(
+                "The RPC server does not have a published endpoint yet. Set or auto-generate an advertised URL first."
+                    .to_string(),
+            );
+        }
+
+        let response = rpc_registry::publish_public_rpc(
+            &self.rpc_registry_url,
+            &rpc.advertised_url,
+            &self.wallet.address,
+        )?;
+        if let Ok(endpoints) = rpc_registry::fetch_public_rpcs(&self.rpc_registry_url) {
+            self.discovered_public_rpcs = endpoints;
+        }
+        Ok(response)
+    }
+
     fn queue_block_sync(&mut self, manual: bool) {
         let Some(p2p_manager) = &self.p2p_manager else {
             if manual {
@@ -976,7 +1039,7 @@ impl WalletApp {
                 );
                 ui.label(
                     egui::RichText::new(
-                        "Local BEC wallet, local chain state, and continuous mining controls",
+                        "Persistent BEC wallet, peer-sync-ready node state, and continuous mining controls",
                     )
                     .color(COLOR_MUTED),
                 );
@@ -1056,7 +1119,7 @@ impl WalletApp {
 
         ui.add_space(16.0);
 
-        section_card(ui, "Local State", |ui| {
+        section_card(ui, "Persistent State", |ui| {
             ui.label("Wallet file:");
             ui.monospace(&self.wallet_state_path);
             ui.add_space(4.0);
@@ -1064,7 +1127,7 @@ impl WalletApp {
             ui.monospace(self.node.storage_path.as_ref().display().to_string());
             ui.add_space(6.0);
             ui.small(
-                "The blockchain currently exists as local node state on this machine until full peer sync is implemented.",
+                "Wallet and chain state are stored in your user data directory so this node can relaunch cleanly and participate in wider peer sync.",
             );
         });
 
@@ -1616,6 +1679,8 @@ impl WalletApp {
         ui.columns(2, |columns| {
             section_card(&mut columns[0], "Mining Control", |ui| {
                 ui.label(format!("Mining Address: {}", self.wallet.address));
+                ui.label(format!("Wallet Balance: {} BEC", self.wallet.balance_bec()));
+                ui.label(format!("Chain Height: {}", self.node.get_status().best_height));
                 ui.label(format!("Mining Active: {}", mining.active));
                 ui.label(format!("Workers In Use: {}", mining.worker_count));
                 ui.label(format!("Hash Rate: {:.0} H/s", mining.hash_rate));
@@ -1718,7 +1783,25 @@ impl WalletApp {
                         ) {
                             Ok(()) => {
                                 self.message =
-                                    format!("RPC server started on {}", self.rpc_bind_addr)
+                                    format!("RPC server started on {}", self.rpc_bind_addr);
+                                if self.auto_publish_rpc
+                                    && !self.rpc_registry_url.trim().is_empty()
+                                {
+                                    match self.publish_current_rpc_to_registry() {
+                                        Ok(result) => {
+                                            self.message = format!(
+                                                "RPC server started on {}. {}",
+                                                self.rpc_bind_addr, result
+                                            );
+                                        }
+                                        Err(err) => {
+                                            self.message = format!(
+                                                "RPC server started on {}. Registry publish skipped: {}",
+                                                self.rpc_bind_addr, err
+                                            );
+                                        }
+                                    }
+                                }
                             }
                             Err(err) => self.message = err,
                         }
@@ -1751,6 +1834,79 @@ impl WalletApp {
                     ));
                 }
             });
+        });
+
+        ui.add_space(12.0);
+
+        section_card(ui, "Public RPC Registry", |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Registry URL");
+                ui.text_edit_singleline(&mut self.rpc_registry_url);
+            });
+            ui.checkbox(
+                &mut self.auto_publish_rpc,
+                "Auto-publish my RPC when remote RPC starts",
+            );
+            ui.small(
+                "Point this at your hosted registry PHP file. The app can fetch open public RPC endpoints from it and publish this node there once remote RPC is enabled.",
+            );
+
+            ui.horizontal(|ui| {
+                if ui.button("Refresh Public RPCs").clicked() {
+                    self.refresh_public_rpc_registry();
+                }
+                if ui.button("Publish My RPC").clicked() {
+                    match self.publish_current_rpc_to_registry() {
+                        Ok(result) => self.message = result,
+                        Err(err) => self.message = err,
+                    }
+                }
+            });
+
+            if self.rpc_registry_url.trim().is_empty() {
+                ui.small("Set a registry URL before checking for public RPC endpoints.");
+            } else if self.discovered_public_rpcs.is_empty() {
+                ui.small(
+                    "No public RPCs are cached yet. Refresh the registry URL above before deciding there are none.",
+                );
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_source("public_rpc_registry_scroll")
+                    .max_height(180.0)
+                    .show(ui, |ui| {
+                        for endpoint in self.discovered_public_rpcs.iter().take(20) {
+                            ui.label(format!(
+                                "{} | height {} | peers {}",
+                                endpoint.rpc_url,
+                                endpoint.best_height,
+                                endpoint.connected_peers
+                            ));
+                            ui.small(format!(
+                                "Owner: {} | Remote: {} | Source: {} | Last seen: {}",
+                                if endpoint.owner_address.trim().is_empty() {
+                                    "n/a"
+                                } else {
+                                    endpoint.owner_address.as_str()
+                                },
+                                endpoint.remote_enabled,
+                                if endpoint.source.trim().is_empty() {
+                                    "unknown"
+                                } else {
+                                    endpoint.source.as_str()
+                                },
+                                endpoint.last_seen
+                            ));
+                            ui.add_space(6.0);
+                        }
+                    });
+                if let Some(example) = self.discovered_public_rpcs.first() {
+                    ui.small(format!(
+                        "HTTP bridge example: POST {{\"rpc_url\":\"{}\",\"method\":\"getinfo\",\"params\":{{}},\"id\":1}} to {}?action=proxy",
+                        example.rpc_url,
+                        self.rpc_registry_url.trim()
+                    ));
+                }
+            }
         });
 
         ui.add_space(12.0);
@@ -1798,11 +1954,11 @@ impl WalletApp {
 
         section_card(ui, "P2P Network Status", |ui| {
             if self.p2p_manager.is_some() {
-                ui.label("P2P Status: Listening on 127.0.0.1:30303 (localhost only)");
+                ui.label("P2P Status: Listening on 0.0.0.0:30303 (public peer-ready)");
                 ui.label(format!("Connected Peers: {}", connected_peers));
                 ui.label(format!("Best Known Peer Height: {}", best_known_peer_height));
                 ui.label(format!("Local Height: {}", status.best_height));
-                ui.small("GUI mode listens on localhost for security. Use CLI mode with --listen 0.0.0.0:30303 for network-accessible P2P.");
+                ui.small("GUI mode can accept remote peers. Bootstrap one or more seed peers to join a wider public network.");
             } else {
                 ui.label("P2P network not initialized");
             }
@@ -1824,14 +1980,13 @@ impl WalletApp {
             if ui.button("Sync Blocks from Peers").clicked() {
                 self.queue_block_sync(true);
             }
-            if ui.button("Reset Local Blockchain to Genesis").clicked() {
+            if ui.button("Reset Blockchain to Genesis").clicked() {
                 match self.node.reset_to_genesis() {
                     Ok(()) => {
                         self.pending_transfers.clear();
                         self.last_notified_block_hash = None;
                         self.refresh_wallet_state();
-                        self.message =
-                            "Local blockchain reset to the genesis block".to_string();
+                        self.message = "Blockchain reset to the genesis block".to_string();
                     }
                     Err(err) => self.message = err,
                 }
@@ -1841,10 +1996,10 @@ impl WalletApp {
         ui.add_space(12.0);
 
         section_card(ui, "Network Configuration", |ui| {
-            ui.label("Listen Address: 127.0.0.1:30303 (GUI default)");
-            ui.label("Max Peers: 16");
+            ui.label("Listen Address: 0.0.0.0:30303 (GUI default)");
+            ui.label("Max Peers: 32");
             ui.label("Peer Timeout: 5 minutes");
-            ui.small("For production deployments, use CLI mode: cargo run -- node p2p --listen 0.0.0.0:30303 --bootstrap <PEER_ADDR>");
+            ui.small("Production example: cargo run --release -- node p2p --listen 0.0.0.0:30303 --bootstrap <PEER_ADDR>");
         });
 
         ui.add_space(12.0);
@@ -2050,5 +2205,5 @@ fn format_unix_timestamp(timestamp: u64) -> String {
 }
 
 fn load_or_create_node() -> Result<Node, String> {
-    Node::load_or_create(DEFAULT_NODE_STATE_PATH, None)
+    Node::load_or_create(default_node_state_path(), None)
 }

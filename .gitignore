@@ -1,4 +1,7 @@
 target/
+dist/
+msix_build/
+website/rpc_registry_data.json
 **/*.rs.bk
 Cargo.lock
 .DS_Store

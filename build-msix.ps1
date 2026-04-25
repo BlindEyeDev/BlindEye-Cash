@@ -4,15 +4,16 @@
 
 param(
     [string]$SignCertificatePath = "",
-    [string]$SignCertificatePassword = ""
+    [string]$SignCertificatePassword = "",
+    [switch]$SkipMsix
 )
 
 $ErrorActionPreference = "Stop"
 
-Write-Host "[MSIX] Building BlindEye MSIX package..." -ForegroundColor Cyan
+Write-Host "[Release] Building BlindEye production artifacts..." -ForegroundColor Cyan
 
 # Build the Rust binary in release mode
-Write-Host "[MSIX] Building Rust binary..." -ForegroundColor Yellow
+Write-Host "[Release] Building Rust binary in release mode..." -ForegroundColor Yellow
 $cargoCommand = Get-Command "cargo.exe" -ErrorAction SilentlyContinue
 if ($null -eq $cargoCommand) {
     $fallbackCargoPath = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
@@ -30,29 +31,50 @@ if ($cargoProcess.ExitCode -ne 0) {
     Write-Error "Cargo build failed"
 }
 
-# Prepare MSIX folder structure
+# Get package version from Cargo.toml
+$cargoToml = Get-Content "Cargo.toml" -Raw
+$versionMatch = [regex]::Match($cargoToml, 'version\s*=\s*"([^"]+)"')
+if ($versionMatch.Success) {
+    $version = $versionMatch.Groups[1].Value
+    Write-Host "[MSIX] Using version: $version" -ForegroundColor Green
+} else {
+    $version = "0.1.0"
+    Write-Host "[MSIX] Version not found in Cargo.toml, using default: $version" -ForegroundColor Yellow
+}
+
+# Prepare release folders
+$distDir = "dist"
+$standaloneDir = Join-Path $distDir "BlindEyeWallet-$version-win-x64"
 $msixDir = "msix_build"
 $packageDir = "$msixDir\BlindEyeWallet"
+
+if (Test-Path $standaloneDir) {
+    Remove-Item $standaloneDir -Recurse -Force
+}
 
 if (Test-Path $msixDir) {
     Remove-Item $msixDir -Recurse -Force
 }
 
+New-Item -ItemType Directory -Path "$standaloneDir\Assets" -Force | Out-Null
 New-Item -ItemType Directory -Path "$packageDir\Assets" -Force | Out-Null
 
-Write-Host "[MSIX] Copying files..." -ForegroundColor Yellow
+Write-Host "[Release] Copying files..." -ForegroundColor Yellow
 
 # Copy binary
 Copy-Item "target\release\blindeye.exe" -Destination $packageDir -Force
+Copy-Item "target\release\blindeye.exe" -Destination $standaloneDir -Force
 
 # Copy manifest
 Copy-Item "Package.appxmanifest" -Destination $packageDir -Force
+Copy-Item "Package.appxmanifest" -Destination $standaloneDir -Force
 
 # Create placeholder assets (you should replace these with proper icons)
 if (Test-Path "assets") {
     Copy-Item "assets\*" -Destination "$packageDir\Assets" -Force
+    Copy-Item "assets\*" -Destination "$standaloneDir\Assets" -Force
 } else {
-    Write-Host "[MSIX] Warning: assets folder not found. Creating placeholder assets." -ForegroundColor Yellow
+    Write-Host "[Release] Warning: assets folder not found. Creating placeholder assets." -ForegroundColor Yellow
     
     # Create a simple PNG placeholder (1x1 transparent)
     $pngBytes = @(0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44, 0x52,
@@ -65,17 +87,20 @@ if (Test-Path "assets") {
     [System.IO.File]::WriteAllBytes("$packageDir\Assets\Square44x44Logo.png", $pngBytes)
     [System.IO.File]::WriteAllBytes("$packageDir\Assets\StoreLogo.png", $pngBytes)
     [System.IO.File]::WriteAllBytes("$packageDir\Assets\SplashScreen.png", $pngBytes)
+    [System.IO.File]::WriteAllBytes("$standaloneDir\Assets\Square150x150Logo.png", $pngBytes)
+    [System.IO.File]::WriteAllBytes("$standaloneDir\Assets\Square44x44Logo.png", $pngBytes)
+    [System.IO.File]::WriteAllBytes("$standaloneDir\Assets\StoreLogo.png", $pngBytes)
+    [System.IO.File]::WriteAllBytes("$standaloneDir\Assets\SplashScreen.png", $pngBytes)
 }
 
-# Get package version from Cargo.toml
-$cargoToml = Get-Content "Cargo.toml" -Raw
-$versionMatch = [regex]::Match($cargoToml, 'version\s*=\s*"([^"]+)"')
-if ($versionMatch.Success) {
-    $version = $versionMatch.Groups[1].Value
-    Write-Host "[MSIX] Using version: $version" -ForegroundColor Green
-} else {
-    $version = "0.1.0"
-    Write-Host "[MSIX] Version not found in Cargo.toml, using default: $version" -ForegroundColor Yellow
+Write-Host "[Release] Standalone bundle ready at: $standaloneDir" -ForegroundColor Green
+
+if ($SkipMsix) {
+    if (Test-Path $msixDir) {
+        Remove-Item $msixDir -Recurse -Force
+    }
+    Write-Host "[Release] Skipping MSIX packaging by request." -ForegroundColor Yellow
+    return
 }
 
 # Get Windows 10 SDK path
@@ -126,3 +151,4 @@ Remove-Item $msixDir -Recurse -Force
 
 Write-Host "[MSIX] MSIX package created successfully: $msixPath" -ForegroundColor Green
 Write-Host "[MSIX] To install: Add-AppxPackage -Path $msixPath" -ForegroundColor Cyan
+Write-Host "[Release] Standalone EXE bundle remains available at: $standaloneDir" -ForegroundColor Cyan

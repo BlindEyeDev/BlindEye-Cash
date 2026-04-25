@@ -98,6 +98,13 @@ Mining pool with RPC:
 cargo run --release -- mining rpc 0.0.0.0:18443
 ```
 
+Public RPC discovery and publishing:
+- Host [website/rpc-registry.php](website/rpc-registry.php) on your website.
+- Put that URL into the GUI Mining tab `Registry URL` field.
+- Use `Refresh Public RPCs` to discover open endpoints.
+- Use `Publish My RPC` to publish your own remote RPC there.
+- See [docs/PUBLIC_RPC_REGISTRY.md](docs/PUBLIC_RPC_REGISTRY.md) for setup details.
+
 ## P2P Networking
 
 Start a P2P node:

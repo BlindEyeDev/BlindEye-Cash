@@ -3,6 +3,7 @@ use crate::blockchain::Blockchain;
 use crate::mempool::Mempool;
 use crate::mining::{BlockTemplate, Miner, MiningSettings, MiningSnapshot};
 use crate::network::{NetworkConfig, PeerManager};
+use crate::paths::blindeye_data_dir;
 use crate::protocol::{format_bec_amount, ConsensusParameters, EmissionSchedule};
 use crate::rpc::RpcServer;
 use crate::transaction::Transaction;
@@ -14,6 +15,10 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_NODE_STATE_PATH: &str = "blindeye-node-state.bin";
+
+pub fn default_node_state_path() -> PathBuf {
+    blindeye_data_dir().join(DEFAULT_NODE_STATE_PATH)
+}
 
 #[derive(Debug, Clone)]
 pub struct NodeStatus {
@@ -68,7 +73,7 @@ impl Node {
             rpc_server: Arc::new(RpcServer::new()),
             peer_manager: Arc::new(Mutex::new(PeerManager::new(network))),
             consensus_params,
-            storage_path: Arc::new(PathBuf::from(DEFAULT_NODE_STATE_PATH)),
+            storage_path: Arc::new(default_node_state_path()),
         }
     }
 
@@ -113,6 +118,12 @@ impl Node {
     }
 
     pub fn save_state(&self) -> Result<(), String> {
+        if let Some(parent) = self.storage_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| format!("Failed to prepare node state directory: {err}"))?;
+            }
+        }
         let disk_state = NodeDiskState {
             blockchain: self.blockchain.lock().unwrap().clone(),
             mempool: self.mempool.lock().unwrap().clone(),

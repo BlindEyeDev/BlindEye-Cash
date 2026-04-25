@@ -1,7 +1,7 @@
 CARGO ?= cargo
 PSHELL ?= powershell.exe
 
-.PHONY: all build check run gui node p2p mining test doc fmt clean msix help
+.PHONY: all build check prod-check run gui node p2p mining test doc fmt clean standalone msix help
 
 all:
 	$(CARGO) build --release
@@ -11,6 +11,10 @@ build:
 
 check:
 	$(CARGO) check
+
+prod-check:
+	$(CARGO) check --release
+	$(CARGO) test --quiet
 
 run:
 	$(CARGO) run --release -- $(ARGS)
@@ -39,6 +43,9 @@ fmt:
 clean:
 	$(CARGO) clean
 
+standalone:
+	$(PSHELL) -ExecutionPolicy Bypass -File build-msix.ps1 -SkipMsix
+
 msix:
 	$(PSHELL) -ExecutionPolicy Bypass -File build-msix.ps1
 
@@ -47,6 +54,7 @@ help:
 		"make all      - build release binary" \
 		"make build    - build release binary" \
 		"make check    - run cargo check" \
+		"make prod-check - run release cargo check and quiet tests" \
 		"make run      - run binary with custom args via ARGS=\"...\"" \
 		"make gui      - launch GUI wallet" \
 		"make node     - start CLI node" \
@@ -56,4 +64,5 @@ help:
 		"make fmt      - run cargo fmt" \
 		"make doc      - build docs" \
 		"make clean    - clean build artifacts" \
-		"make msix     - build Windows MSIX package"
+		"make standalone - build versioned standalone Windows release bundle in dist/" \
+		"make msix     - build standalone bundle and Windows MSIX package"

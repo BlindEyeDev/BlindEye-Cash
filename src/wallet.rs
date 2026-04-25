@@ -1,4 +1,5 @@
 use crate::blockchain::Blockchain;
+use crate::paths::blindeye_data_dir;
 use crate::protocol;
 use crate::transaction::{address_from_public_key, OutPoint, Transaction, TxInput, TxOutput};
 use aes_gcm::aead::{Aead, KeyInit};
@@ -11,12 +12,20 @@ use secp256k1::{PublicKey, Secp256k1, SecretKey};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use zeroize::Zeroize;
 
 pub const DEFAULT_WALLET_STATE_PATH: &str = "blindeye-wallet-state.json";
 pub const DEFAULT_WALLET_BACKUP_PATH: &str = "blindeye-wallet-backup.json";
 const INITIAL_FEE_ESTIMATE_BYTES: u64 = 220;
+
+pub fn default_wallet_state_path() -> PathBuf {
+    blindeye_data_dir().join(DEFAULT_WALLET_STATE_PATH)
+}
+
+pub fn default_wallet_backup_path() -> PathBuf {
+    blindeye_data_dir().join(DEFAULT_WALLET_BACKUP_PATH)
+}
 
 #[derive(Debug, Clone)]
 pub struct TransactionPreview {
@@ -345,6 +354,12 @@ impl Wallet {
     }
 
     pub fn save_to_file<P: AsRef<Path>>(&self, path: P, password: &str) -> Result<(), String> {
+        if let Some(parent) = path.as_ref().parent() {
+            if !parent.as_os_str().is_empty() {
+                fs::create_dir_all(parent)
+                    .map_err(|err| format!("Failed to prepare wallet state directory: {err}"))?;
+            }
+        }
         let backup = self.to_backup(password)?;
         let json = serde_json::to_string_pretty(&backup)
             .map_err(|err| format!("Failed to serialize wallet state: {err}"))?;

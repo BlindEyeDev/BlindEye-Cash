@@ -9,15 +9,10 @@ pub struct NetworkConfig {
 
 impl Default for NetworkConfig {
     fn default() -> Self {
-        // For GUI/single-node mode: listen on localhost only (secure default)
-        // For CLI/P2P mode: use --listen 0.0.0.0:30303 to accept remote peers
         Self {
-            listen_addr: "127.0.0.1:30303".to_string(),
-            max_peers: 16,
-            bootstrap_nodes: vec![
-                "127.0.0.1:30303".to_string(),
-                // Future: add production seed nodes here
-            ],
+            listen_addr: "0.0.0.0:30303".to_string(),
+            max_peers: 32,
+            bootstrap_nodes: vec![],
         }
     }
 }
