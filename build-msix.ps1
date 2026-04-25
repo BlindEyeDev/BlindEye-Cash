@@ -13,8 +13,20 @@ Write-Host "[MSIX] Building BlindEye MSIX package..." -ForegroundColor Cyan
 
 # Build the Rust binary in release mode
 Write-Host "[MSIX] Building Rust binary..." -ForegroundColor Yellow
-cargo build --release 2>&1
-if ($LASTEXITCODE -ne 0) {
+$cargoCommand = Get-Command "cargo.exe" -ErrorAction SilentlyContinue
+if ($null -eq $cargoCommand) {
+    $fallbackCargoPath = Join-Path $env:USERPROFILE ".cargo\bin\cargo.exe"
+    if (Test-Path $fallbackCargoPath) {
+        $cargoPath = $fallbackCargoPath
+    } else {
+        Write-Error "cargo.exe not found. Please install Rust or add cargo to PATH."
+    }
+} else {
+    $cargoPath = $cargoCommand.Source
+}
+
+$cargoProcess = Start-Process -FilePath $cargoPath -ArgumentList @("build", "--release") -NoNewWindow -Wait -PassThru
+if ($cargoProcess.ExitCode -ne 0) {
     Write-Error "Cargo build failed"
 }
 
@@ -26,8 +38,7 @@ if (Test-Path $msixDir) {
     Remove-Item $msixDir -Recurse -Force
 }
 
-New-Item -ItemType Directory -Path "$packageDir\Assets" | Out-Null
-New-Item -ItemType Directory -Path "$packageDir" | Out-Null
+New-Item -ItemType Directory -Path "$packageDir\Assets" -Force | Out-Null
 
 Write-Host "[MSIX] Copying files..." -ForegroundColor Yellow
 
@@ -57,10 +68,10 @@ if (Test-Path "assets") {
 }
 
 # Get package version from Cargo.toml
-$cargoToml = Get-Content "Cargo.toml"
-$versionMatch = $cargoToml | Select-String 'version\s*=\s*"([^"]+)"'
-if ($versionMatch -match 'version\s*=\s*"([^"]+)"') {
-    $version = $matches[1]
+$cargoToml = Get-Content "Cargo.toml" -Raw
+$versionMatch = [regex]::Match($cargoToml, 'version\s*=\s*"([^"]+)"')
+if ($versionMatch.Success) {
+    $version = $versionMatch.Groups[1].Value
     Write-Host "[MSIX] Using version: $version" -ForegroundColor Green
 } else {
     $version = "0.1.0"
