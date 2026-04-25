@@ -253,6 +253,7 @@ pub(crate) fn mine_template_parallel(
         let sender = sender.clone();
         let found = found.clone();
         let running = running.clone();
+        let session_id = session_id.clone();
         let total_hashes = total_hashes.clone();
         let template = template.clone();
 

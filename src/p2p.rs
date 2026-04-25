@@ -4,7 +4,9 @@ use crate::node::Node;
 use crate::transaction::Transaction;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::Arc;
 use std::time::SystemTime;
 use thiserror::Error;
@@ -172,12 +174,16 @@ impl P2PManager {
         best_height: Option<u64>,
     ) {
         let mut peers = self.peers.write().await;
+        let mut should_sync = false;
         if let Some(peer) = peers.get_mut(connection_addr) {
             peer.last_seen = SystemTime::now();
             if let Some(best_height) = best_height {
                 peer.best_height = peer.best_height.max(best_height);
-                self.sync_node_peer_manager(&peers);
+                should_sync = true;
             }
+        }
+        if should_sync {
+            self.sync_node_peer_manager(&peers);
         }
     }
 
@@ -273,7 +279,7 @@ impl P2PManager {
     }
 
     /// Connect to a bootstrap peer
-    pub async fn connect_peer(self: Arc<Self>, addr: SocketAddr) -> P2PResult<()> {
+    pub async fn connect_peer(&self, addr: SocketAddr) -> P2PResult<()> {
         if addr == self.listen_addr
             || self
                 .peers
@@ -343,7 +349,7 @@ impl P2PManager {
         loop {
             match self.read_message(reader.clone()).await {
                 Ok(msg) => {
-                    self.handle_message(peer_connection_addr, &msg, writer.clone())
+                    self.handle_message(peer_connection_addr, msg, writer.clone())
                         .await?;
                 }
                 Err(P2PError::PeerDisconnected) => {
@@ -403,7 +409,7 @@ impl P2PManager {
         loop {
             match self.read_message(reader.clone()).await {
                 Ok(msg) => {
-                    self.handle_message(peer_connection_addr, &msg, writer.clone())
+                    self.handle_message(peer_connection_addr, msg, writer.clone())
                         .await?;
                 }
                 Err(P2PError::PeerDisconnected) => {
@@ -426,13 +432,14 @@ impl P2PManager {
     }
 
     /// Handle incoming P2P message
-    async fn handle_message(
+    fn handle_message(
         &self,
         connection_addr: SocketAddr,
-        msg: &PeerMessage,
+        msg: PeerMessage,
         writer: Arc<tokio::sync::Mutex<OwnedWriteHalf>>,
-    ) -> P2PResult<()> {
-        let best_height = match msg {
+    ) -> Pin<Box<dyn Future<Output = P2PResult<()>> + Send + '_>> {
+        Box::pin(async move {
+        let best_height = match &msg {
             PeerMessage::Block(block) => Some(block.header.height),
             PeerMessage::Handshake { best_height, .. } => Some(*best_height),
             _ => None,
@@ -447,12 +454,13 @@ impl P2PManager {
                     let origin_addr = self
                         .advertised_addr_for_connection(&connection_addr)
                         .await;
+                    let relay_msg = PeerMessage::Block(block);
                     eprintln!(
                         "[P2P] Block received and added from {}",
                         connection_addr
                     );
                     for peer_addr in self.connected_peer_addresses(origin_addr).await {
-                        if let Err(e) = self.broadcast_message(peer_addr, msg).await {
+                        if let Err(e) = self.broadcast_message(peer_addr, &relay_msg).await {
                             eprintln!(
                                 "[P2P] Failed to relay block to {}: {}",
                                 peer_addr, e
@@ -468,9 +476,10 @@ impl P2PManager {
                     let origin_addr = self
                         .advertised_addr_for_connection(&connection_addr)
                         .await;
+                    let relay_msg = PeerMessage::Transaction(tx);
                     eprintln!("[P2P] Transaction received from {}", connection_addr);
                     for peer_addr in self.connected_peer_addresses(origin_addr).await {
-                        if let Err(e) = self.broadcast_message(peer_addr, msg).await {
+                        if let Err(e) = self.broadcast_message(peer_addr, &relay_msg).await {
                             eprintln!(
                                 "[P2P] Failed to relay transaction to {}: {}",
                                 peer_addr, e
@@ -504,7 +513,7 @@ impl P2PManager {
                 }
             }
             PeerMessage::GetHeaders { from_height, count } => {
-                for block in self.node.blocks_from_height(*from_height, *count) {
+                for block in self.node.blocks_from_height(from_height, count) {
                     self.write_message(writer.clone(), &PeerMessage::Block(block))
                         .await?;
                 }
@@ -512,13 +521,14 @@ impl P2PManager {
                     .await?;
             }
             PeerMessage::Ping { nonce } => {
-                self.write_message(writer, &PeerMessage::Pong { nonce: *nonce })
+                self.write_message(writer, &PeerMessage::Pong { nonce })
                     .await?;
             }
             PeerMessage::Pong { .. } => {}
             _ => {}
         }
         Ok(())
+        })
     }
 
     /// Read a P2P message from stream

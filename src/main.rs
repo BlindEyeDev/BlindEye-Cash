@@ -1761,29 +1761,28 @@ impl WalletApp {
         section_card(ui, "Connected Peer List", |ui| {
             if peer_snapshot.is_empty() {
                 ui.small("No live peers connected yet.");
-                return;
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_source("peer_list_scroll")
+                    .max_height(220.0)
+                    .show(ui, |ui| {
+                        for peer in peer_snapshot {
+                            let last_seen = peer
+                                .last_seen
+                                .elapsed()
+                                .unwrap_or_default()
+                                .as_secs();
+                            ui.monospace(format!(
+                                "{} | height {} | v{} | last seen {}s ago | conn {}",
+                                peer.address,
+                                peer.best_height,
+                                peer.version,
+                                last_seen,
+                                peer.connection_addr
+                            ));
+                        }
+                    });
             }
-
-            egui::ScrollArea::vertical()
-                .id_source("peer_list_scroll")
-                .max_height(220.0)
-                .show(ui, |ui| {
-                    for peer in peer_snapshot {
-                        let last_seen = peer
-                            .last_seen
-                            .elapsed()
-                            .unwrap_or_default()
-                            .as_secs();
-                        ui.monospace(format!(
-                            "{} | height {} | v{} | last seen {}s ago | conn {}",
-                            peer.address,
-                            peer.best_height,
-                            peer.version,
-                            last_seen,
-                            peer.connection_addr
-                        ));
-                    }
-                });
         });
     }
 }
