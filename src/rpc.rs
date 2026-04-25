@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::VecDeque;
 use std::io::{BufRead, BufReader, Write};
-use std::net::TcpListener;
+use std::net::{IpAddr, SocketAddr, TcpListener, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -66,12 +66,13 @@ impl RpcServer {
             return Err("RPC server is already running".to_string());
         }
 
-        let advertised_url = advertised_url.unwrap_or_default().trim().to_string();
+        let advertised_url =
+            normalize_advertised_rpc_url(&bind_addr, advertised_url.unwrap_or_default().trim());
         *self.bind_addr.lock().unwrap() = bind_addr.clone();
         *self.advertised_url.lock().unwrap() = advertised_url.clone();
         push_log_line(&self.logs, format!("RPC server listening on {bind_addr}"));
         if !advertised_url.is_empty() {
-            push_log_line(&self.logs, format!("RPC advertised as {advertised_url}"));
+            push_log_line(&self.logs, format!("RPC published at {advertised_url}"));
         }
 
         let running = self.running.clone();
@@ -162,6 +163,36 @@ impl RpcServer {
             log_lines: self.logs.lock().unwrap().iter().cloned().collect(),
         }
     }
+}
+
+fn normalize_advertised_rpc_url(bind_addr: &str, advertised_url: &str) -> String {
+    let trimmed = advertised_url.trim();
+    if !trimmed.is_empty() {
+        if trimmed.contains("://") {
+            return trimmed.to_string();
+        }
+        return format!("http://{trimmed}");
+    }
+
+    auto_rpc_url(bind_addr).unwrap_or_default()
+}
+
+fn auto_rpc_url(bind_addr: &str) -> Option<String> {
+    let addr = bind_addr.parse::<SocketAddr>().ok()?;
+    let host = if addr.ip().is_loopback() {
+        IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)
+    } else if addr.ip().is_unspecified() {
+        discover_local_ip().unwrap_or(IpAddr::V4(std::net::Ipv4Addr::LOCALHOST))
+    } else {
+        addr.ip()
+    };
+    Some(format!("http://{host}:{}", addr.port()))
+}
+
+fn discover_local_ip() -> Option<IpAddr> {
+    let socket = UdpSocket::bind("0.0.0.0:0").ok()?;
+    socket.connect("8.8.8.8:80").ok()?;
+    Some(socket.local_addr().ok()?.ip())
 }
 
 fn handle_rpc_request(
