@@ -100,6 +100,7 @@ impl Mempool {
             .collect()
     }
 
+    #[allow(dead_code)]
     pub fn remove_transaction(&mut self, txid: &[u8; 32]) {
         self.transactions.remove(txid);
     }

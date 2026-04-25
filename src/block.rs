@@ -22,6 +22,7 @@ pub struct Block {
 }
 
 impl Block {
+    #[allow(dead_code)]
     pub fn new(previous_block_hash: [u8; 32], transactions: Vec<Transaction>, height: u64) -> Self {
         Self::with_bits(
             previous_block_hash,

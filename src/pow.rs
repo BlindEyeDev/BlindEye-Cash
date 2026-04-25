@@ -3,6 +3,7 @@ use blake3;
 pub struct BlindHash;
 
 impl BlindHash {
+    #[allow(dead_code)]
     pub fn description() -> &'static str {
         "BlindHash is a non-ASIC-friendly proof-of-work function built on Blake3 with compact targets and transaction-aware retargeting hooks."
     }

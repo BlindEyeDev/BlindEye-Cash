@@ -24,6 +24,7 @@ impl Default for NetworkConfig {
 
 impl NetworkConfig {
     /// Create a production-ready network config that listens on all interfaces
+    #[allow(dead_code)]
     pub fn production() -> Self {
         Self {
             listen_addr: "0.0.0.0:30303".to_string(),
@@ -60,6 +61,7 @@ impl PeerManager {
         self.peers.iter().collect()
     }
 
+    #[allow(dead_code)]
     pub fn add_or_update_peer(&mut self, peer: Peer) {
         if let Some(existing) = self
             .peers
@@ -72,6 +74,7 @@ impl PeerManager {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove_peer(&mut self, id: &str) {
         self.peers.retain(|peer| peer.id != id);
     }

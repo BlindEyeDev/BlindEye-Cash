@@ -51,6 +51,7 @@ pub struct Node {
 }
 
 impl Node {
+    #[allow(dead_code)]
     pub fn new(network_config: Option<NetworkConfig>) -> Self {
         Self::in_memory(network_config)
     }
@@ -224,6 +225,7 @@ impl Node {
         )
     }
 
+    #[allow(dead_code)]
     pub fn mine_one_block(&self, miner_address: &[u8]) -> Result<Block, String> {
         let template = self.create_block_template(miner_address)?;
         let running = Arc::new(AtomicBool::new(true));
@@ -319,6 +321,7 @@ impl Node {
         }
     }
 
+    #[allow(dead_code)]
     pub fn fund_address_for_testing(&self, address: &str, amount: u64) -> Result<(), String> {
         let mut blockchain = self.blockchain.lock().unwrap();
         blockchain

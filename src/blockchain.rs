@@ -282,14 +282,17 @@ impl Blockchain {
         self.blocks.get(hash)
     }
 
+    #[allow(dead_code)]
     pub fn get_header(&self, hash: &[u8; 32]) -> Option<&BlockHeader> {
         self.headers.get(hash)
     }
 
+    #[allow(dead_code)]
     pub fn get_utxo(&self, outpoint: &OutPoint) -> Option<&UTXO> {
         self.utxo_set.get(outpoint)
     }
 
+    #[allow(dead_code)]
     pub fn get_best_block_hash(&self) -> [u8; 32] {
         *self.best_chain.last().unwrap_or(&self.genesis_hash)
     }
@@ -429,6 +432,7 @@ impl Blockchain {
         history
     }
 
+    #[allow(dead_code)]
     pub fn fund_address_for_testing(
         &mut self,
         address: &str,

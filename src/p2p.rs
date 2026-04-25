@@ -612,6 +612,7 @@ impl P2PManager {
     }
 
     /// Get connected peers count
+    #[allow(dead_code)]
     pub async fn peer_count(&self) -> usize {
         self.peers
             .read()
@@ -629,6 +630,7 @@ impl P2PManager {
             .unwrap_or(0)
     }
 
+    #[allow(dead_code)]
     pub fn best_known_height_now(&self) -> u64 {
         self.peers
             .try_read()
@@ -647,6 +649,7 @@ impl P2PManager {
     }
 
     /// Get list of connected peers
+    #[allow(dead_code)]
     pub async fn get_peers(&self) -> Vec<ConnectedPeer> {
         self.peers.read().await.values().cloned().collect()
     }

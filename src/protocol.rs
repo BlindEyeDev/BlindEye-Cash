@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 
 pub const COIN: u64 = 100_000_000;
 pub const DEFAULT_BLOCK_TIME_SECONDS: u64 = 1;
+#[allow(dead_code)]
 pub const BLOCKS_PER_YEAR: u64 = 365 * 24 * 3600 / DEFAULT_BLOCK_TIME_SECONDS;
 pub const INITIAL_REWARD_UNITS: u64 = 100 * COIN;
 pub const MAX_SUPPLY_COINS: u64 = 420_480_000;
@@ -17,6 +18,7 @@ pub const INSTANT_CONFIRMATION_TARGET_SECONDS: u64 = 0;
 pub const GENESIS_TIMESTAMP: u64 = 1_777_200_000;
 
 /// Genesis block hash (deterministic, derived from fixed parameters)
+#[allow(dead_code)]
 pub const GENESIS_HASH: &str = "deterministic_genesis_hash_will_be_computed_at_runtime";
 
 
@@ -97,6 +99,7 @@ impl EmissionSchedule {
         self.initial_reward >> halving_count
     }
 
+    #[allow(dead_code)]
     pub fn issued_through(&self, height: u64) -> u128 {
         let mut total = 0u128;
         let mut remaining_blocks = height + 1;
@@ -117,6 +120,7 @@ impl EmissionSchedule {
         total
     }
 
+    #[allow(dead_code)]
     pub fn schedule_summary(&self) -> String {
         format!(
             "BlindEye emission schedule: max_supply={} BEC, initial_reward={} BEC, halving_interval={} blocks, max_halvings={}, final_reward_block={}.",
