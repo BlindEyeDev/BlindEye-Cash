@@ -17,6 +17,10 @@ pub struct PublicRpcEndpoint {
     pub remote_enabled: bool,
     #[serde(default)]
     pub last_seen: u64,
+    #[serde(default)]
+    pub verified: bool,
+    #[serde(default)]
+    pub last_error: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -58,6 +62,9 @@ pub fn publish_public_rpc(
     registry_url: &str,
     rpc_url: &str,
     owner_address: &str,
+    best_height: u64,
+    connected_peers: usize,
+    remote_enabled: bool,
 ) -> Result<String, String> {
     let request_url = registry_action_url(registry_url, "publish")?;
     let response = ureq::post(&request_url)
@@ -66,6 +73,9 @@ pub fn publish_public_rpc(
             "rpc_url": rpc_url,
             "owner_address": owner_address,
             "source": "blindeye-gui",
+            "best_height": best_height,
+            "connected_peers": connected_peers,
+            "remote_enabled": remote_enabled,
         }))
         .map_err(|err| format!("Unable to publish to RPC registry: {err}"))?;
     let parsed: RegistryPublishResponse = response

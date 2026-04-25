@@ -11,7 +11,7 @@ Returns the cached list of published BlindEye RPC endpoints.
 Probes the published RPC endpoints live and returns only still-working entries.
 
 3. `POST ?action=publish`
-Publishes a user's remote BlindEye RPC endpoint into the registry after probing it.
+Publishes a user's remote BlindEye RPC endpoint into the registry. If the website can probe it immediately, it is marked verified. If not, it is still stored as pending verification with the last probe error.
 
 4. `POST ?action=proxy`
 Acts as an HTTP bridge to a published BlindEye RPC endpoint.
@@ -72,4 +72,5 @@ curl -X POST "https://yourdomain.com/rpc-registry.php?action=proxy" \
 
 - The BlindEye node RPC is raw TCP JSON-RPC right now, not a browser-native HTTP JSON-RPC server.
 - This registry file makes a website usable as a public directory and HTTP bridge without needing SSH or a VPS.
+- Nodes can now appear in the registry even before the website can reach them directly, which helps with NAT or delayed port-forward changes.
 - For public use, add rate limiting or a secret publish token before opening it broadly.

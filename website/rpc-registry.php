@@ -26,6 +26,9 @@ try {
             $rpcUrl = trim((string)($payload['rpc_url'] ?? ''));
             $ownerAddress = trim((string)($payload['owner_address'] ?? ''));
             $source = trim((string)($payload['source'] ?? 'website'));
+            $bestHeight = (int)($payload['best_height'] ?? 0);
+            $connectedPeers = (int)($payload['connected_peers'] ?? 0);
+            $remoteEnabled = (bool)($payload['remote_enabled'] ?? false);
             if ($rpcUrl === '') {
                 json_response([
                     'ok' => false,
@@ -33,30 +36,46 @@ try {
                 ], 400);
             }
 
-            $probe = probe_blindeye_rpc($rpcUrl);
+            $verified = false;
+            $lastError = '';
+            try {
+                $probe = probe_blindeye_rpc($rpcUrl);
+                $bestHeight = (int)($probe['best_height'] ?? $bestHeight);
+                $connectedPeers = (int)($probe['connected_peers'] ?? $connectedPeers);
+                $remoteEnabled = (bool)($probe['rpc_allow_remote'] ?? $remoteEnabled);
+                $verified = true;
+            } catch (Throwable $probeError) {
+                $lastError = $probeError->getMessage();
+            }
             $registry = load_registry();
             $registry = upsert_registry_entry($registry, [
                 'rpc_url' => canonical_rpc_url($rpcUrl),
                 'owner_address' => $ownerAddress,
                 'source' => $source,
-                'best_height' => (int)($probe['best_height'] ?? 0),
-                'connected_peers' => (int)($probe['connected_peers'] ?? 0),
-                'remote_enabled' => (bool)($probe['rpc_allow_remote'] ?? false),
+                'best_height' => $bestHeight,
+                'connected_peers' => $connectedPeers,
+                'remote_enabled' => $remoteEnabled,
                 'last_seen' => time(),
+                'verified' => $verified,
+                'last_error' => $lastError,
             ]);
             save_registry($registry);
 
             json_response([
                 'ok' => true,
-                'message' => 'RPC endpoint published',
+                'message' => $verified
+                    ? 'RPC endpoint published and verified'
+                    : 'RPC endpoint published as pending verification',
                 'endpoint' => [
                     'rpc_url' => canonical_rpc_url($rpcUrl),
                     'owner_address' => $ownerAddress,
                     'source' => $source,
-                    'best_height' => (int)($probe['best_height'] ?? 0),
-                    'connected_peers' => (int)($probe['connected_peers'] ?? 0),
-                    'remote_enabled' => (bool)($probe['rpc_allow_remote'] ?? false),
+                    'best_height' => $bestHeight,
+                    'connected_peers' => $connectedPeers,
+                    'remote_enabled' => $remoteEnabled,
                     'last_seen' => time(),
+                    'verified' => $verified,
+                    'last_error' => $lastError,
                 ],
             ]);
             break;
@@ -195,6 +214,8 @@ function load_registry(): array
         $entry['connected_peers'] = (int)($entry['connected_peers'] ?? 0);
         $entry['remote_enabled'] = (bool)($entry['remote_enabled'] ?? false);
         $entry['last_seen'] = (int)($entry['last_seen'] ?? 0);
+        $entry['verified'] = (bool)($entry['verified'] ?? false);
+        $entry['last_error'] = (string)($entry['last_error'] ?? '');
         $registry[$entry['rpc_url']] = $entry;
     }
 
@@ -240,10 +261,16 @@ function live_registry_status(array $registry): array
             $entry['connected_peers'] = (int)($probe['connected_peers'] ?? 0);
             $entry['remote_enabled'] = (bool)($probe['rpc_allow_remote'] ?? false);
             $entry['last_seen'] = $now;
+            $entry['verified'] = true;
+            $entry['last_error'] = '';
             $registry[$rpcUrl] = $entry;
         } catch (Throwable $error) {
             if (($entry['last_seen'] ?? 0) + STALE_AFTER_SECONDS < $now) {
                 unset($registry[$rpcUrl]);
+            } else {
+                $entry['verified'] = false;
+                $entry['last_error'] = $error->getMessage();
+                $registry[$rpcUrl] = $entry;
             }
         }
     }

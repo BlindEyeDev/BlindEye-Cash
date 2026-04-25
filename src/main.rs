@@ -888,6 +888,9 @@ impl WalletApp {
             &self.rpc_registry_url,
             &rpc.advertised_url,
             &self.wallet.address,
+            self.node.get_best_height(),
+            self.connected_peer_count(&self.node.get_status()),
+            rpc.allow_remote,
         )?;
         if let Ok(endpoints) = rpc_registry::fetch_public_rpcs(&self.rpc_registry_url) {
             self.discovered_public_rpcs = endpoints;
@@ -1906,13 +1909,14 @@ impl WalletApp {
                                 endpoint.connected_peers
                             ));
                             ui.small(format!(
-                                "Owner: {} | Remote: {} | Source: {} | Last seen: {}",
+                                "Owner: {} | Remote: {} | Verified: {} | Source: {} | Last seen: {}",
                                 if endpoint.owner_address.trim().is_empty() {
                                     "n/a"
                                 } else {
                                     endpoint.owner_address.as_str()
                                 },
                                 endpoint.remote_enabled,
+                                endpoint.verified,
                                 if endpoint.source.trim().is_empty() {
                                     "unknown"
                                 } else {
@@ -1920,6 +1924,9 @@ impl WalletApp {
                                 },
                                 endpoint.last_seen
                             ));
+                            if !endpoint.last_error.trim().is_empty() {
+                                ui.small(format!("Last registry probe error: {}", endpoint.last_error));
+                            }
                             ui.add_space(6.0);
                         }
                     });
