@@ -14,6 +14,7 @@ mod wallet;
 
 use clap::{Parser, Subcommand};
 use eframe::egui;
+use blockchain::{WalletTransactionDirection, WalletTransactionRecord};
 use mining::MiningSettings;
 use node::{Node, DEFAULT_NODE_STATE_PATH};
 use p2p::P2PManager;
@@ -24,7 +25,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use wallet::{TransactionPreview, Wallet, DEFAULT_WALLET_BACKUP_PATH, DEFAULT_WALLET_STATE_PATH};
 
 const COLOR_NEAR_BLACK: egui::Color32 = egui::Color32::from_rgb(7, 10, 19);
@@ -434,6 +435,7 @@ struct WalletApp {
     mine_empty_blocks: bool,
     message: String,
     pending_transfers: Vec<PendingTransfer>,
+    wallet_history: Vec<WalletTransactionRecord>,
     wallet_password: String,
     p2p_manager: Option<Arc<P2PManager>>,
     p2p_runtime: Option<tokio::runtime::Runtime>,
@@ -526,6 +528,7 @@ impl Default for WalletApp {
             mine_empty_blocks: true,
             message: String::new(),
             pending_transfers: Vec::new(),
+            wallet_history: Vec::new(),
             wallet_password,
             p2p_manager: Some(p2p_manager),
             p2p_runtime: None,
@@ -1069,6 +1072,8 @@ impl WalletApp {
             self.spendable_balance = self
                 .wallet
                 .spendable_balance(&blockchain, &reserved_outpoints);
+            self.wallet_history =
+                blockchain.wallet_transaction_history(&self.wallet.address_bytes());
         }
 
         let mempool = self.node.mempool.lock().unwrap();
@@ -1223,6 +1228,52 @@ impl WalletApp {
                 }
             });
         }
+
+        ui.add_space(12.0);
+        section_card(ui, "Transaction History", |ui| {
+            if self.wallet_history.is_empty() {
+                ui.small("No confirmed wallet transactions yet.");
+            } else {
+                egui::ScrollArea::vertical()
+                    .id_source("wallet_history_scroll")
+                    .max_height(320.0)
+                    .show(ui, |ui| {
+                        for record in self.wallet_history.iter().take(20) {
+                            let direction = match record.direction {
+                                WalletTransactionDirection::Incoming => "Incoming",
+                                WalletTransactionDirection::Outgoing => "Outgoing",
+                                WalletTransactionDirection::MiningReward => "Mining Reward",
+                                WalletTransactionDirection::SelfTransfer => "Self Transfer",
+                            };
+                            let counterparty = record
+                                .counterparty
+                                .as_deref()
+                                .map(|value| shorten_middle(value, 10))
+                                .unwrap_or_else(|| "n/a".to_string());
+
+                            ui.label(format!(
+                                "{} {} BEC at height {}",
+                                direction,
+                                format_bec_amount(record.amount),
+                                record.height
+                            ));
+                            ui.small(format!(
+                                "Counterparty: {} | Fee: {} BEC | Time: {}",
+                                counterparty,
+                                format_bec_amount(record.fee),
+                                format_unix_timestamp(record.timestamp)
+                            ));
+                            ui.small(format!(
+                                "TX {} | inputs {} | outputs {}",
+                                shorten_middle(&hex::encode(record.txid), 10),
+                                record.transaction.inputs.len(),
+                                record.transaction.outputs.len()
+                            ));
+                            ui.add_space(8.0);
+                        }
+                    });
+            }
+        });
     }
 
     fn show_send_tab(&mut self, ui: &mut egui::Ui) {
@@ -1947,6 +1998,15 @@ fn shorten_middle(value: &str, edge: usize) -> String {
         &value[..edge],
         &value[value.len().saturating_sub(edge)..]
     )
+}
+
+fn format_unix_timestamp(timestamp: u64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let age = now.saturating_sub(timestamp);
+    format!("{} ({}s ago)", timestamp, age)
 }
 
 fn load_or_create_node() -> Result<Node, String> {

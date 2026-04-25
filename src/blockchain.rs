@@ -12,6 +12,26 @@ pub struct UTXO {
     pub is_coinbase: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalletTransactionDirection {
+    Incoming,
+    Outgoing,
+    MiningReward,
+    SelfTransfer,
+}
+
+#[derive(Debug, Clone)]
+pub struct WalletTransactionRecord {
+    pub transaction: Transaction,
+    pub txid: [u8; 32],
+    pub height: u64,
+    pub timestamp: u64,
+    pub direction: WalletTransactionDirection,
+    pub amount: u64,
+    pub fee: u64,
+    pub counterparty: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Blockchain {
     pub blocks: HashMap<[u8; 32], Block>,
@@ -306,6 +326,109 @@ impl Blockchain {
         utxos
     }
 
+    pub fn wallet_transaction_history(
+        &self,
+        script_pubkey: &[u8],
+    ) -> Vec<WalletTransactionRecord> {
+        let mut known_outputs = HashMap::<[u8; 32], Vec<TxOutput>>::new();
+        let mut history = Vec::new();
+
+        for block_hash in &self.best_chain {
+            let Some(block) = self.blocks.get(block_hash) else {
+                continue;
+            };
+
+            for transaction in &block.transactions {
+                let txid = transaction.txid();
+                let incoming_amount: u64 = transaction
+                    .outputs
+                    .iter()
+                    .filter(|output| output.script_pubkey == script_pubkey)
+                    .map(|output| output.value)
+                    .sum();
+
+                let owned_input_amount: u64 = transaction
+                    .inputs
+                    .iter()
+                    .filter_map(|input| {
+                        known_outputs
+                            .get(&input.previous_output.txid)
+                            .and_then(|outputs| outputs.get(input.previous_output.vout as usize))
+                    })
+                    .filter(|output| output.script_pubkey == script_pubkey)
+                    .map(|output| output.value)
+                    .sum();
+
+                if incoming_amount == 0 && owned_input_amount == 0 {
+                    known_outputs.insert(txid, transaction.outputs.clone());
+                    continue;
+                }
+
+                let first_external_output = transaction
+                    .outputs
+                    .iter()
+                    .find(|output| output.script_pubkey != script_pubkey)
+                    .map(|output| display_script_pubkey(&output.script_pubkey));
+                let first_input_address = transaction
+                    .inputs
+                    .iter()
+                    .find_map(|input| address_from_script_sig(&input.script_sig))
+                    .map(|bytes| display_script_pubkey(&bytes));
+                let external_send_amount: u64 = transaction
+                    .outputs
+                    .iter()
+                    .filter(|output| output.script_pubkey != script_pubkey)
+                    .map(|output| output.value)
+                    .sum();
+                let fee = owned_input_amount.saturating_sub(transaction.total_output_value());
+
+                let (direction, amount, counterparty) = if transaction.inputs.is_empty() {
+                    (
+                        WalletTransactionDirection::MiningReward,
+                        incoming_amount,
+                        None,
+                    )
+                } else if owned_input_amount > 0 {
+                    if external_send_amount == 0 {
+                        (
+                            WalletTransactionDirection::SelfTransfer,
+                            incoming_amount,
+                            Some("Self".to_string()),
+                        )
+                    } else {
+                        (
+                            WalletTransactionDirection::Outgoing,
+                            external_send_amount,
+                            first_external_output,
+                        )
+                    }
+                } else {
+                    (
+                        WalletTransactionDirection::Incoming,
+                        incoming_amount,
+                        first_input_address,
+                    )
+                };
+
+                history.push(WalletTransactionRecord {
+                    transaction: transaction.clone(),
+                    txid,
+                    height: block.header.height,
+                    timestamp: block.header.timestamp,
+                    direction,
+                    amount,
+                    fee,
+                    counterparty,
+                });
+
+                known_outputs.insert(txid, transaction.outputs.clone());
+            }
+        }
+
+        history.reverse();
+        history
+    }
+
     pub fn fund_address_for_testing(
         &mut self,
         address: &str,
@@ -379,6 +502,11 @@ impl Blockchain {
 
         Ok(total_input_value - total_output_value)
     }
+}
+
+fn display_script_pubkey(script_pubkey: &[u8]) -> String {
+    String::from_utf8(script_pubkey.to_vec())
+        .unwrap_or_else(|_| format!("hex:{}", hex::encode(script_pubkey)))
 }
 
 #[cfg(test)]

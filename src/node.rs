@@ -11,6 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub const DEFAULT_NODE_STATE_PATH: &str = "blindeye-node-state.bin";
 
@@ -175,6 +176,11 @@ impl Node {
             .last()
             .copied()
             .ok_or("No best chain")?;
+        let previous_timestamp = blockchain
+            .blocks
+            .get(&best_hash)
+            .map(|block| block.header.timestamp)
+            .ok_or("Best block missing")?;
 
         let (transactions, total_fees) = mempool.get_transactions_for_block(1_000_000);
         let tx_count = transactions.len();
@@ -184,15 +190,23 @@ impl Node {
             .block_reward(height)
             .saturating_add(total_fees);
         let bits = blockchain.next_work_bits(tx_count);
-
-        Ok(BlockTemplate::new(
+        let template_timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs()
+            .max(previous_timestamp);
+        let mut template = BlockTemplate::new(
             best_hash,
             transactions,
             height,
             block_reward,
             miner_address,
             bits,
-        ))
+        );
+        template.header.timestamp = template_timestamp;
+        template.block.header.timestamp = template_timestamp;
+
+        Ok(template)
     }
 
     pub fn start_continuous_mining(
@@ -323,5 +337,55 @@ impl Node {
         self.miner
             .push_log("Local blockchain reset to genesis block".to_string());
         self.save_state()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mining::create_coinbase_transaction;
+    use crate::protocol;
+
+    #[test]
+    fn block_template_timestamp_never_precedes_tip() {
+        let node = Node::in_memory(None);
+        let miner_address = b"miner-address".to_vec();
+
+        {
+            let mut blockchain = node.blockchain.lock().unwrap();
+            let genesis_hash = blockchain.get_best_block_hash();
+            let genesis_timestamp = blockchain
+                .blocks
+                .get(&genesis_hash)
+                .expect("genesis block must exist")
+                .header
+                .timestamp;
+
+            let mut block = Block::with_bits(
+                genesis_hash,
+                vec![create_coinbase_transaction(1, 100, &miner_address)],
+                1,
+                protocol::DEFAULT_BITS,
+            );
+            block.header.timestamp = genesis_timestamp + 10;
+            blockchain.add_block(block).expect("tip block should be accepted");
+        }
+
+        let template = node
+            .create_block_template(&miner_address)
+            .expect("template should be created");
+        let tip_timestamp = {
+            let blockchain = node.blockchain.lock().unwrap();
+            let tip_hash = blockchain.get_best_block_hash();
+            blockchain
+                .blocks
+                .get(&tip_hash)
+                .expect("tip block must exist")
+                .header
+                .timestamp
+        };
+
+        assert!(template.header.timestamp >= tip_timestamp);
+        assert_eq!(template.block.header.timestamp, template.header.timestamp);
     }
 }

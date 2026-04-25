@@ -189,6 +189,11 @@ impl Wallet {
 
     pub fn sync_balance(&mut self, blockchain: &Blockchain) {
         self.balance = blockchain.get_balance(&self.address_bytes());
+        self.transactions = blockchain
+            .wallet_transaction_history(&self.address_bytes())
+            .into_iter()
+            .map(|record| record.transaction)
+            .collect();
     }
 
     pub fn balance_bec(&self) -> String {
