@@ -396,10 +396,17 @@ fn run_p2p_node(
 fn launch_gui() -> Result<(), Box<dyn std::error::Error>> {
     let viewport = if let Some(icon) = load_app_icon() {
         egui::ViewportBuilder::default()
-            .with_inner_size([1180.0, 860.0])
+            .with_inner_size([520.0, 320.0])
+            .with_transparent(true)
+            .with_decorations(false)
+            .with_resizable(false)
             .with_icon(Arc::new(icon))
     } else {
-        egui::ViewportBuilder::default().with_inner_size([1180.0, 860.0])
+        egui::ViewportBuilder::default()
+            .with_inner_size([520.0, 320.0])
+            .with_transparent(true)
+            .with_decorations(false)
+            .with_resizable(false)
     };
     let options = eframe::NativeOptions {
         viewport,
@@ -447,6 +454,7 @@ struct WalletApp {
     sync_in_progress: Arc<AtomicBool>,
     sync_result_message: Arc<Mutex<Option<String>>>,
     app_started_at: Instant,
+    splash_window_restored: bool,
     show_password_dialog: bool,
     password_input: String,
     password_confirm: String,
@@ -540,6 +548,7 @@ impl Default for WalletApp {
             sync_in_progress: Arc::new(AtomicBool::new(false)),
             sync_result_message: Arc::new(Mutex::new(None)),
             app_started_at: Instant::now(),
+            splash_window_restored: false,
             show_password_dialog: !wallet_state_exists,
             password_input: String::new(),
             password_confirm: String::new(),
@@ -577,6 +586,10 @@ impl eframe::App for WalletApp {
         if self.show_startup_splash(ctx) {
             ctx.request_repaint_after(Duration::from_millis(16));
             return;
+        }
+
+        if !self.splash_window_restored {
+            self.restore_main_window(ctx);
         }
 
         self.poll_background_state();
@@ -696,7 +709,7 @@ impl WalletApp {
     }
 
     fn show_startup_splash(&mut self, ctx: &egui::Context) -> bool {
-        let splash_duration = 2.2_f32;
+        let splash_duration = 1.15_f32;
         let elapsed = self.app_started_at.elapsed().as_secs_f32();
         if elapsed >= splash_duration {
             return false;
@@ -704,36 +717,24 @@ impl WalletApp {
 
         let progress = (elapsed / splash_duration).clamp(0.0, 1.0);
         let zoom_progress = ease_out_cubic(progress);
-        let fade_progress = ((progress - 0.68) / 0.32).clamp(0.0, 1.0);
+        let fade_progress = ((progress - 0.8) / 0.2).clamp(0.0, 1.0);
         let alpha = (1.0 - ease_in_cubic(fade_progress)).clamp(0.0, 1.0);
-        let rotation = TAU * (0.15 + (1.55 * zoom_progress));
-        let icon_size = egui::lerp(150.0..=430.0, zoom_progress);
+        let rotation = TAU * (0.2 + (3.2 * zoom_progress));
+        let icon_size = egui::lerp(120.0..=360.0, zoom_progress);
 
         egui::CentralPanel::default()
-            .frame(egui::Frame::none().fill(COLOR_NEAR_BLACK))
+            .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
             .show(ctx, |ui| {
                 let rect = ui.max_rect();
                 let painter = ui.painter();
                 let overlay_alpha = (alpha * 255.0).round() as u8;
                 let title_alpha = (alpha * 230.0).round() as u8;
 
-                painter.rect_filled(rect, 0.0, COLOR_NEAR_BLACK);
-                painter.circle_filled(
-                    rect.center() + egui::vec2(-rect.width() * 0.16, -rect.height() * 0.08),
-                    rect.width() * 0.24,
-                    egui::Color32::from_rgba_unmultiplied(31, 94, 179, overlay_alpha / 3),
-                );
-                painter.circle_filled(
-                    rect.center() + egui::vec2(rect.width() * 0.18, rect.height() * 0.12),
-                    rect.width() * 0.19,
-                    egui::Color32::from_rgba_unmultiplied(92, 207, 224, overlay_alpha / 4),
-                );
-
                 if let Some(texture) = &self.logo_texture {
                     paint_rotating_texture(
                         painter,
                         texture,
-                        rect.center() + egui::vec2(0.0, -24.0),
+                        rect.center() + egui::vec2(0.0, -18.0),
                         icon_size,
                         rotation,
                         egui::Color32::from_rgba_unmultiplied(
@@ -746,7 +747,7 @@ impl WalletApp {
                 }
 
                 painter.text(
-                    rect.center() + egui::vec2(0.0, rect.height() * 0.24),
+                    rect.center() + egui::vec2(0.0, rect.height() * 0.28),
                     egui::Align2::CENTER_CENTER,
                     "BLINDEYE",
                     egui::FontId::proportional(36.0),
@@ -760,6 +761,14 @@ impl WalletApp {
             });
 
         true
+    }
+
+    fn restore_main_window(&mut self, ctx: &egui::Context) {
+        ctx.send_viewport_cmd(egui::ViewportCommand::Transparent(false));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Decorations(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::Resizable(true));
+        ctx.send_viewport_cmd(egui::ViewportCommand::InnerSize(egui::vec2(1180.0, 860.0)));
+        self.splash_window_restored = true;
     }
 
     fn broadcast_transaction_to_peers(&self, transaction: transaction::Transaction) {
