@@ -447,12 +447,17 @@ mod tests {
     #[test]
     fn roundtrips_wallet_backup() {
         let wallet = Wallet::new();
-        let backup = wallet.to_backup();
+        let backup = wallet
+            .to_backup("test-password")
+            .expect("create encrypted backup");
         let json = serde_json::to_string(&backup).expect("serialize backup");
         let decoded: WalletBackup = serde_json::from_str(&json).expect("deserialize backup");
 
         assert_eq!(decoded.address, wallet.address);
-        assert_eq!(decoded.mnemonic, wallet.mnemonic);
+        assert_eq!(decoded.public_key_hex, hex::encode(wallet.public.serialize()));
+        assert!(!decoded.encrypted_mnemonic.is_empty());
+        assert!(!decoded.salt.is_empty());
+        assert!(!decoded.nonce.is_empty());
     }
 
     #[test]

@@ -341,9 +341,10 @@ fn handle_mining_cli(action: MiningAction) -> Result<(), Box<dyn std::error::Err
                 advertise.clone(),
                 wallet.address.clone(),
             )?;
-            println!("RPC server started on {}", addr);
-            if let Some(advertise) = advertise.filter(|value| !value.trim().is_empty()) {
-                println!("Advertised RPC URL: {}", advertise);
+            let rpc = node.rpc_server.snapshot();
+            println!("RPC server started on {}", rpc.bind_addr);
+            if !rpc.advertised_url.is_empty() {
+                println!("Published RPC URL: {}", rpc.advertised_url);
             }
             loop {
                 thread::sleep(Duration::from_secs(60));
@@ -958,6 +959,8 @@ impl WalletApp {
     }
 
     fn show_header(&mut self, ui: &mut egui::Ui) {
+        let status = self.node.get_status();
+        let connected_peers = self.connected_peer_count(&status);
         let mining = self.node.mining_snapshot();
 
         ui.add_space(10.0);
@@ -996,6 +999,20 @@ impl WalletApp {
                             COLOR_BLUE
                         })
                         .color(COLOR_NEAR_BLACK),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("Height {}", status.best_height))
+                        .strong()
+                        .background_color(COLOR_BLUE)
+                        .color(COLOR_SILVER),
+                );
+                ui.add_space(6.0);
+                ui.label(
+                    egui::RichText::new(format!("Peers {}", connected_peers))
+                        .strong()
+                        .background_color(COLOR_CARD_SOFT)
+                        .color(COLOR_SILVER),
                 );
                 ui.add_space(6.0);
                 ui.label(
@@ -1690,6 +1707,9 @@ impl WalletApp {
                     ui.label("Advertise URL");
                     ui.text_edit_singleline(&mut self.rpc_advertise_url);
                 });
+                if self.rpc_advertise_url.trim().is_empty() {
+                    ui.small("Leave Advertise URL blank to auto-publish a usable endpoint from the bind address.");
+                }
                 ui.horizontal(|ui| {
                     if ui.button("Start RPC").clicked() {
                         match self.node.rpc_server.start(
@@ -1713,12 +1733,25 @@ impl WalletApp {
                 ui.label(format!("RPC Active: {}", rpc.active));
                 ui.label(format!("RPC Bind: {}", rpc.bind_addr));
                 if !rpc.advertised_url.is_empty() {
-                    ui.label(format!("RPC Public URL: {}", rpc.advertised_url));
+                    ui.horizontal(|ui| {
+                        ui.label(format!("Published RPC URL: {}", rpc.advertised_url));
+                        if ui.button("Copy URL").clicked() {
+                            ui.ctx().copy_text(rpc.advertised_url.clone());
+                            self.message = "RPC URL copied to clipboard".to_string();
+                        }
+                    });
                 }
                 ui.label(format!("Remote RPC Enabled: {}", rpc.allow_remote));
                 ui.small(
-                    "This RPC is a node-local operator interface, not chain consensus. Keep it on localhost unless you intentionally want external clients or pool workers to connect.",
+                    "Bitcoin-style default is local RPC first. Keep it on localhost unless you intentionally want pool workers or external operator tooling to connect.",
                 );
+                ui.small("Methods: getinfo, getmininginfo, getblocktemplate, submitblock, sendtransaction");
+                if !rpc.advertised_url.is_empty() {
+                    ui.monospace(format!(
+                        "{{\"jsonrpc\":\"2.0\",\"method\":\"getinfo\",\"params\":{{}},\"id\":1}}  ->  {}",
+                        rpc.advertised_url
+                    ));
+                }
             });
         });
 

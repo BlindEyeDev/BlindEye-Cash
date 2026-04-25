@@ -697,9 +697,13 @@ impl P2PManager {
                         };
                         self.write_message(writer.clone(), &request).await?;
 
-                        for _ in 0..request_count {
-                            if let Ok(msg) = self.read_message(reader.clone()).await {
-                                if let PeerMessage::Block(block) = msg {
+                        let mut received_blocks = 0u32;
+                        while received_blocks < request_count {
+                            let Ok(msg) = self.read_message(reader.clone()).await else {
+                                break;
+                            };
+                            match msg {
+                                PeerMessage::Block(block) => {
                                     let previous_height = self.node.get_best_height();
                                     if self.node.add_block(block).is_ok() {
                                         let new_height = self.node.get_best_height();
@@ -708,11 +712,26 @@ impl P2PManager {
                                             local_height = new_height;
                                         }
                                     }
-                                } else {
+                                    received_blocks += 1;
+                                }
+                                PeerMessage::GetPeers => {
+                                    let peers: Vec<String> = self
+                                        .peers
+                                        .read()
+                                        .await
+                                        .values()
+                                        .map(|peer| peer.address.to_string())
+                                        .collect();
+                                    self.write_message(writer.clone(), &PeerMessage::Peers(peers))
+                                        .await?;
+                                }
+                                PeerMessage::Ping { nonce } => {
+                                    self.write_message(writer.clone(), &PeerMessage::Pong { nonce })
+                                        .await?;
                                     break;
                                 }
-                            } else {
-                                break;
+                                PeerMessage::Peers(_) | PeerMessage::Pong { .. } => {}
+                                _ => break,
                             }
                         }
                     }

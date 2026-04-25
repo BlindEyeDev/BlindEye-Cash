@@ -555,18 +555,25 @@ mod tests {
         let alternate_miner = Wallet::new();
 
         let genesis = blockchain.get_best_block_hash();
+        let genesis_timestamp = blockchain
+            .blocks
+            .get(&genesis)
+            .expect("genesis block must exist")
+            .header
+            .timestamp;
 
-        let block_one = Block::with_bits(
+        let mut block_one = Block::with_bits(
             genesis,
             vec![create_coinbase_transaction(1, 100, &miner.address_bytes())],
             1,
             protocol::DEFAULT_BITS,
         );
+        block_one.header.timestamp = genesis_timestamp + 1;
         blockchain
             .add_block(block_one.clone())
             .expect("accept block one");
 
-        let fork_a = Block::with_bits(
+        let mut fork_a = Block::with_bits(
             genesis,
             vec![create_coinbase_transaction(
                 1,
@@ -576,16 +583,18 @@ mod tests {
             1,
             protocol::DEFAULT_BITS,
         );
+        fork_a.header.timestamp = genesis_timestamp + 1;
         blockchain
             .add_block(fork_a.clone())
             .expect("accept side block");
 
-        let fork_b = Block::with_bits(
+        let mut fork_b = Block::with_bits(
             fork_a.hash(),
             vec![create_coinbase_transaction(2, 50, &miner.address_bytes())],
             2,
             protocol::DEFAULT_BITS,
         );
+        fork_b.header.timestamp = fork_a.header.timestamp + 1;
         blockchain
             .add_block(fork_b.clone())
             .expect("accept longer fork");
@@ -599,13 +608,20 @@ mod tests {
         let mut blockchain = Blockchain::new();
         let miner = Wallet::new();
         let genesis = blockchain.get_best_block_hash();
+        let genesis_timestamp = blockchain
+            .blocks
+            .get(&genesis)
+            .expect("genesis block must exist")
+            .header
+            .timestamp;
 
-        let block = Block::with_bits(
+        let mut block = Block::with_bits(
             genesis,
             vec![create_coinbase_transaction(1, 100, &miner.address_bytes())],
             1,
             protocol::DEFAULT_BITS,
         );
+        block.header.timestamp = genesis_timestamp + 1;
 
         blockchain.add_block(block.clone()).expect("accept block");
         assert_eq!(blockchain.add_block(block), Err("Block is already known"));
