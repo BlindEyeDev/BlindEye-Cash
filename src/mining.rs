@@ -1,5 +1,6 @@
 use crate::block::{Block, BlockHeader};
 use crate::pow::BlindHash;
+use crate::protocol::format_bec_amount;
 use crate::transaction::{Transaction, TxOutput};
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -19,7 +20,7 @@ impl Default for MiningSettings {
     fn default() -> Self {
         Self {
             worker_count: thread::available_parallelism()
-                .map(|parallelism| parallelism.get())
+                .map(|parallelism| parallelism.get().saturating_sub(1).max(1))
                 .unwrap_or(1)
                 .clamp(1, 32),
             mine_empty_blocks: true,
@@ -41,6 +42,7 @@ pub struct MiningSnapshot {
 pub struct Miner {
     pub running: Arc<AtomicBool>,
     total_hashes: Arc<AtomicU64>,
+    session_id: Arc<AtomicU64>,
     started_at: Arc<Mutex<Option<Instant>>>,
     last_block_hash: Arc<Mutex<Option<[u8; 32]>>>,
     logs: Arc<Mutex<VecDeque<String>>>,
@@ -54,6 +56,7 @@ impl Miner {
         Self {
             running: Arc::new(AtomicBool::new(false)),
             total_hashes: Arc::new(AtomicU64::new(0)),
+            session_id: Arc::new(AtomicU64::new(0)),
             started_at: Arc::new(Mutex::new(None)),
             last_block_hash: Arc::new(Mutex::new(None)),
             logs: Arc::new(Mutex::new(VecDeque::with_capacity(256))),
@@ -77,6 +80,7 @@ impl Miner {
             return Err("Mining is already running".to_string());
         }
 
+        let current_session = self.session_id.fetch_add(1, Ordering::SeqCst) + 1;
         self.total_hashes.store(0, Ordering::SeqCst);
         *self.started_at.lock().unwrap() = Some(Instant::now());
         *self.last_block_hash.lock().unwrap() = None;
@@ -90,6 +94,7 @@ impl Miner {
 
         let running = self.running.clone();
         let total_hashes = self.total_hashes.clone();
+        let session_id = self.session_id.clone();
         let last_block_hash = self.last_block_hash.clone();
         let logs = self.logs.clone();
         let worker_count = settings.worker_count.max(1);
@@ -98,7 +103,9 @@ impl Miner {
         let submit_block = Arc::new(submit_block);
 
         let handle = thread::spawn(move || {
-            while running.load(Ordering::SeqCst) {
+            while running.load(Ordering::SeqCst)
+                && session_id.load(Ordering::SeqCst) == current_session
+            {
                 let template = match make_template() {
                     Ok(template) => template,
                     Err(err) => {
@@ -118,10 +125,17 @@ impl Miner {
                     template,
                     worker_count,
                     running.clone(),
+                    session_id.clone(),
+                    current_session,
                     total_hashes.clone(),
                 ) {
                     Ok(block) => {
                         let block_hash = block.hash();
+                        let block_reward = block
+                            .transactions
+                            .first()
+                            .map(|transaction| transaction.total_output_value())
+                            .unwrap_or(0);
                         if let Err(err) = submit_block(block.clone()) {
                             push_log_line(&logs, format!("Submit block failed: {err}"));
                             thread::sleep(std::time::Duration::from_millis(100));
@@ -134,6 +148,14 @@ impl Miner {
                                 "Accepted block {} at height {}",
                                 hex::encode(block_hash),
                                 block.header.height
+                            ),
+                        );
+                        push_log_line(
+                            &logs,
+                            format!(
+                                "Reward {} BEC at difficulty bits 0x{:08x}",
+                                format_bec_amount(block_reward),
+                                block.header.bits
                             ),
                         );
                     }
@@ -153,11 +175,23 @@ impl Miner {
     }
 
     pub fn stop_mining(&self) {
-        self.running.store(false, Ordering::SeqCst);
+        let was_running = self.running.swap(false, Ordering::SeqCst);
+        self.session_id.fetch_add(1, Ordering::SeqCst);
         *self.started_at.lock().unwrap() = None;
-        if let Some(handle) = self.controller.lock().unwrap().take() {
-            let _ = handle.join();
+        if !was_running {
+            return;
         }
+
+        if let Some(handle) = self.controller.lock().unwrap().take() {
+            let logs = self.logs.clone();
+            thread::spawn(move || {
+                if handle.join().is_err() {
+                    push_log_line(&logs, "Mining controller thread terminated unexpectedly".to_string());
+                }
+            });
+        }
+
+        self.push_log("Mining stop requested".to_string());
     }
 
     pub fn is_running(&self) -> bool {
@@ -206,6 +240,8 @@ pub(crate) fn mine_template_parallel(
     template: BlockTemplate,
     worker_count: usize,
     running: Arc<AtomicBool>,
+    session_id: Arc<AtomicU64>,
+    current_session: u64,
     total_hashes: Arc<AtomicU64>,
 ) -> Result<Block, MiningError> {
     let (sender, receiver) = mpsc::channel::<Result<Block, String>>();
@@ -225,15 +261,20 @@ pub(crate) fn mine_template_parallel(
             let target = BlindHash::target_from_bits(header.bits);
             let mut nonce = worker_id as u64;
             let step = worker_count as u64;
+            let mut hashes_since_yield = 0u32;
 
             loop {
-                if !running.load(Ordering::SeqCst) || found.load(Ordering::SeqCst) {
+                if !running.load(Ordering::SeqCst)
+                    || session_id.load(Ordering::SeqCst) != current_session
+                    || found.load(Ordering::SeqCst)
+                {
                     return;
                 }
 
                 header.nonce = nonce;
                 let hash = BlindHash::hash(&header.serialize());
                 total_hashes.fetch_add(1, Ordering::SeqCst);
+                hashes_since_yield = hashes_since_yield.wrapping_add(1);
                 let hash_value = u128::from_le_bytes(hash[0..16].try_into().unwrap());
 
                 if hash_value <= target {
@@ -245,13 +286,19 @@ pub(crate) fn mine_template_parallel(
                 }
 
                 nonce = nonce.wrapping_add(step);
+                if hashes_since_yield >= 4096 {
+                    hashes_since_yield = 0;
+                    thread::yield_now();
+                }
             }
         }));
     }
     drop(sender);
 
     let result = loop {
-        if !running.load(Ordering::SeqCst) {
+        if !running.load(Ordering::SeqCst)
+            || session_id.load(Ordering::SeqCst) != current_session
+        {
             break Err(MiningError::Stopped);
         }
         match receiver.recv_timeout(std::time::Duration::from_millis(100)) {

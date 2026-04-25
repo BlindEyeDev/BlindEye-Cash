@@ -19,10 +19,12 @@ use node::{Node, DEFAULT_NODE_STATE_PATH};
 use p2p::P2PManager;
 use protocol::{format_bec_amount, parse_bec_amount};
 use qrcode::{render::unicode, QrCode};
+use std::f32::consts::TAU;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use wallet::{TransactionPreview, Wallet, DEFAULT_WALLET_BACKUP_PATH, DEFAULT_WALLET_STATE_PATH};
 
 const COLOR_NEAR_BLACK: egui::Color32 = egui::Color32::from_rgb(7, 10, 19);
@@ -365,6 +367,17 @@ fn run_p2p_node(
             node.blockchain.lock().unwrap().genesis_hash
         ));
 
+        let sync_manager = manager.clone();
+        tokio::spawn(async move {
+            let mut sync_interval = tokio::time::interval(Duration::from_secs(5));
+            loop {
+                sync_interval.tick().await;
+                if let Err(e) = sync_manager.synchronize_blocks().await {
+                    eprintln!("[P2P] Background sync error: {}", e);
+                }
+            }
+        });
+
         if let Some(bootstrap) = bootstrap_addr {
             let bootstrap_addr: std::net::SocketAddr = bootstrap.parse()?;
             println!("[P2P] Connecting to bootstrap peer: {}", bootstrap_addr);
@@ -425,6 +438,13 @@ struct WalletApp {
     p2p_manager: Option<Arc<P2PManager>>,
     p2p_runtime: Option<tokio::runtime::Runtime>,
     peer_count: usize,
+    last_observed_height: u64,
+    last_observed_mempool_size: usize,
+    last_notified_block_hash: Option<[u8; 32]>,
+    last_auto_sync_attempt: Instant,
+    sync_in_progress: Arc<AtomicBool>,
+    sync_result_message: Arc<Mutex<Option<String>>>,
+    app_started_at: Instant,
     show_password_dialog: bool,
     password_input: String,
     password_confirm: String,
@@ -456,6 +476,7 @@ impl Default for WalletApp {
     fn default() -> Self {
         let wallet_state_exists = Path::new(DEFAULT_WALLET_STATE_PATH).exists();
         let node = load_or_create_node().unwrap_or_else(|_| Node::in_memory(None));
+        let initial_status = node.get_status();
         let wallet_password = String::new();
         let wallet = if wallet_state_exists {
             Wallet::load_or_create_state(DEFAULT_WALLET_STATE_PATH, &wallet_password)
@@ -509,6 +530,13 @@ impl Default for WalletApp {
             p2p_manager: Some(p2p_manager),
             p2p_runtime: None,
             peer_count: 0,
+            last_observed_height: initial_status.best_height,
+            last_observed_mempool_size: initial_status.mempool_size,
+            last_notified_block_hash: None,
+            last_auto_sync_attempt: Instant::now(),
+            sync_in_progress: Arc::new(AtomicBool::new(false)),
+            sync_result_message: Arc::new(Mutex::new(None)),
+            app_started_at: Instant::now(),
             show_password_dialog: !wallet_state_exists,
             password_input: String::new(),
             password_confirm: String::new(),
@@ -542,6 +570,13 @@ impl eframe::App for WalletApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         apply_theme(ctx);
         self.ensure_logo_texture(ctx);
+
+        if self.show_startup_splash(ctx) {
+            ctx.request_repaint_after(Duration::from_millis(16));
+            return;
+        }
+
+        self.poll_background_state();
 
         // Show password dialog if wallet is new
         if self.show_password_dialog {
@@ -657,6 +692,259 @@ impl WalletApp {
         }
     }
 
+    fn show_startup_splash(&mut self, ctx: &egui::Context) -> bool {
+        let splash_duration = 2.2_f32;
+        let elapsed = self.app_started_at.elapsed().as_secs_f32();
+        if elapsed >= splash_duration {
+            return false;
+        }
+
+        let progress = (elapsed / splash_duration).clamp(0.0, 1.0);
+        let zoom_progress = ease_out_cubic(progress);
+        let fade_progress = ((progress - 0.68) / 0.32).clamp(0.0, 1.0);
+        let alpha = (1.0 - ease_in_cubic(fade_progress)).clamp(0.0, 1.0);
+        let rotation = TAU * (0.15 + (1.55 * zoom_progress));
+        let icon_size = egui::lerp(150.0..=430.0, zoom_progress);
+
+        egui::CentralPanel::default()
+            .frame(egui::Frame::none().fill(COLOR_NEAR_BLACK))
+            .show(ctx, |ui| {
+                let rect = ui.max_rect();
+                let painter = ui.painter();
+                let overlay_alpha = (alpha * 255.0).round() as u8;
+                let title_alpha = (alpha * 230.0).round() as u8;
+
+                painter.rect_filled(rect, 0.0, COLOR_NEAR_BLACK);
+                painter.circle_filled(
+                    rect.center() + egui::vec2(-rect.width() * 0.16, -rect.height() * 0.08),
+                    rect.width() * 0.24,
+                    egui::Color32::from_rgba_unmultiplied(31, 94, 179, overlay_alpha / 3),
+                );
+                painter.circle_filled(
+                    rect.center() + egui::vec2(rect.width() * 0.18, rect.height() * 0.12),
+                    rect.width() * 0.19,
+                    egui::Color32::from_rgba_unmultiplied(92, 207, 224, overlay_alpha / 4),
+                );
+
+                if let Some(texture) = &self.logo_texture {
+                    paint_rotating_texture(
+                        painter,
+                        texture,
+                        rect.center() + egui::vec2(0.0, -24.0),
+                        icon_size,
+                        rotation,
+                        egui::Color32::from_rgba_unmultiplied(
+                            255,
+                            255,
+                            255,
+                            overlay_alpha,
+                        ),
+                    );
+                }
+
+                painter.text(
+                    rect.center() + egui::vec2(0.0, rect.height() * 0.24),
+                    egui::Align2::CENTER_CENTER,
+                    "BLINDEYE",
+                    egui::FontId::proportional(36.0),
+                    egui::Color32::from_rgba_unmultiplied(
+                        COLOR_SILVER.r(),
+                        COLOR_SILVER.g(),
+                        COLOR_SILVER.b(),
+                        title_alpha,
+                    ),
+                );
+            });
+
+        true
+    }
+
+    fn broadcast_transaction_to_peers(&self, transaction: transaction::Transaction) {
+        let Some(p2p_manager) = &self.p2p_manager else {
+            return;
+        };
+
+        let manager = p2p_manager.clone();
+        thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                eprintln!("[P2P] Unable to create runtime for transaction broadcast");
+                return;
+            };
+            runtime.block_on(async move {
+                manager.broadcast_transaction(&transaction).await;
+            });
+        });
+    }
+
+    fn broadcast_block_to_peers(&self, block: block::Block) {
+        let Some(p2p_manager) = &self.p2p_manager else {
+            return;
+        };
+
+        let manager = p2p_manager.clone();
+        thread::spawn(move || {
+            let Ok(runtime) = tokio::runtime::Runtime::new() else {
+                eprintln!("[P2P] Unable to create runtime for block broadcast");
+                return;
+            };
+            runtime.block_on(async move {
+                manager.broadcast_block(&block).await;
+            });
+        });
+    }
+
+    fn clear_sensitive_wallet_views(&mut self) -> bool {
+        let had_sensitive_view = self.show_seed_phrase || self.show_private_key;
+        self.show_seed_phrase = false;
+        self.show_private_key = false;
+        had_sensitive_view
+    }
+
+    fn set_active_tab(&mut self, tab: Tab) {
+        if self.active_tab == tab {
+            return;
+        }
+
+        if self.active_tab == Tab::Receive
+            && tab != Tab::Receive
+            && self.clear_sensitive_wallet_views()
+        {
+            self.message = "Sensitive wallet data hidden after leaving the Receive tab".to_string();
+        }
+
+        self.active_tab = tab;
+    }
+
+    fn connected_peer_count(&self, status: &node::NodeStatus) -> usize {
+        self.peer_count.max(status.connected_peers)
+    }
+
+    fn queue_block_sync(&mut self, manual: bool) {
+        let Some(p2p_manager) = &self.p2p_manager else {
+            if manual {
+                self.message = "P2P networking is not initialized".to_string();
+            }
+            return;
+        };
+        if self.connected_peer_count(&self.node.get_status()) == 0 {
+            if manual {
+                self.message = "No peers are connected for block sync".to_string();
+            }
+            return;
+        }
+
+        if self.sync_in_progress.swap(true, Ordering::SeqCst) {
+            if manual {
+                self.message = "Block sync is already running".to_string();
+            }
+            return;
+        }
+
+        self.last_auto_sync_attempt = Instant::now();
+        if manual {
+            self.message = "Block sync started".to_string();
+        }
+
+        let manager = p2p_manager.clone();
+        let node = self.node.clone();
+        let sync_in_progress = self.sync_in_progress.clone();
+        let sync_result_message = self.sync_result_message.clone();
+        thread::spawn(move || {
+            let runtime = match tokio::runtime::Runtime::new() {
+                Ok(runtime) => runtime,
+                Err(err) => {
+                    *sync_result_message.lock().unwrap() =
+                        Some(format!("Unable to start block sync: {}", err));
+                    sync_in_progress.store(false, Ordering::SeqCst);
+                    return;
+                }
+            };
+
+            let result = runtime.block_on(async { manager.synchronize_blocks().await });
+            let next_message = match result {
+                Ok(imported_blocks) if manual => Some(format!(
+                    "Block sync finished. Imported {} block(s). Height is now {}.",
+                    imported_blocks,
+                    node.get_best_height()
+                )),
+                Ok(imported_blocks) if imported_blocks > 0 => Some(format!(
+                    "Auto-sync imported {} block(s). Height is now {}.",
+                    imported_blocks,
+                    node.get_best_height()
+                )),
+                Ok(_) => None,
+                Err(err) => Some(format!("Block sync failed: {}", err)),
+            };
+
+            if let Some(message) = next_message {
+                *sync_result_message.lock().unwrap() = Some(message);
+            }
+            sync_in_progress.store(false, Ordering::SeqCst);
+        });
+    }
+
+    fn poll_background_state(&mut self) {
+        if let Some(p2p_manager) = &self.p2p_manager {
+            self.peer_count = p2p_manager.peer_count_now();
+        } else {
+            self.peer_count = 0;
+        }
+
+        if let Some(message) = self.sync_result_message.lock().unwrap().take() {
+            self.message = message;
+        }
+
+        let status = self.node.get_status();
+        let previous_height = self.last_observed_height;
+        let previous_mempool_size = self.last_observed_mempool_size;
+        let height_changed = status.best_height != previous_height;
+        let mempool_changed = status.mempool_size != previous_mempool_size;
+
+        if height_changed || mempool_changed {
+            self.refresh_wallet_state();
+            self.last_observed_height = status.best_height;
+            self.last_observed_mempool_size = status.mempool_size;
+        }
+
+        let mining = self.node.mining_snapshot();
+        if mining.last_block_hash != self.last_notified_block_hash {
+            self.last_notified_block_hash = mining.last_block_hash;
+            if let Some(block_hash) = mining.last_block_hash {
+                if let Some(block) = self.node.get_block(&block_hash) {
+                    self.broadcast_block_to_peers(block.clone());
+                    self.refresh_wallet_state();
+                    let reward = block
+                        .transactions
+                        .first()
+                        .map(|transaction| transaction.total_output_value())
+                        .unwrap_or(0);
+                    self.message = format!(
+                        "Accepted block {} at height {}. Reward {} BEC. Difficulty bits 0x{:08x}. Balance {} BEC.",
+                        shorten_middle(&hex::encode(block_hash), 10),
+                        block.header.height,
+                        format_bec_amount(reward),
+                        block.header.bits,
+                        self.wallet.balance_bec()
+                    );
+                }
+            }
+        } else if height_changed && status.best_height > previous_height {
+            self.message = format!(
+                "Chain advanced to height {}. Balance {} BEC.",
+                status.best_height,
+                self.wallet.balance_bec()
+            );
+        }
+
+        if self.p2p_manager.is_some()
+            && self.connected_peer_count(&status) > 0
+            && !self.sync_in_progress.load(Ordering::SeqCst)
+            && self.last_auto_sync_attempt.elapsed() >= Duration::from_secs(5)
+        {
+            self.queue_block_sync(false);
+        }
+    }
+
     fn show_header(&mut self, ui: &mut egui::Ui) {
         let mining = self.node.mining_snapshot();
 
@@ -722,11 +1010,21 @@ impl WalletApp {
         }
 
         ui.vertical(|ui| {
-            nav_button(ui, &mut self.active_tab, Tab::Balance, "Overview");
-            nav_button(ui, &mut self.active_tab, Tab::Send, "Send");
-            nav_button(ui, &mut self.active_tab, Tab::Receive, "Receive");
-            nav_button(ui, &mut self.active_tab, Tab::Mining, "Mining");
-            nav_button(ui, &mut self.active_tab, Tab::Network, "Network");
+            if nav_button(ui, self.active_tab == Tab::Balance, "Overview") {
+                self.set_active_tab(Tab::Balance);
+            }
+            if nav_button(ui, self.active_tab == Tab::Send, "Send") {
+                self.set_active_tab(Tab::Send);
+            }
+            if nav_button(ui, self.active_tab == Tab::Receive, "Receive") {
+                self.set_active_tab(Tab::Receive);
+            }
+            if nav_button(ui, self.active_tab == Tab::Mining, "Mining") {
+                self.set_active_tab(Tab::Mining);
+            }
+            if nav_button(ui, self.active_tab == Tab::Network, "Network") {
+                self.set_active_tab(Tab::Network);
+            }
         });
 
         ui.add_space(16.0);
@@ -747,13 +1045,14 @@ impl WalletApp {
 
         section_card(ui, "Quick Stats", |ui| {
             let status = self.node.get_status();
+            let connected_peers = self.connected_peer_count(&status);
             ui.label(format!(
                 "Address: {}",
                 shorten_middle(&self.wallet.address, 10)
             ));
             ui.label(format!("Height: {}", status.best_height));
             ui.label(format!("Mempool: {}", status.mempool_size));
-            ui.label(format!("Peers: {}", status.connected_peers));
+            ui.label(format!("Peers: {}", connected_peers));
             ui.label(format!("Hash Rate: {:.0} H/s", status.hash_rate));
         });
     }
@@ -775,6 +1074,11 @@ impl WalletApp {
         let mempool = self.node.mempool.lock().unwrap();
         self.pending_transfers
             .retain(|pending| mempool.contains_transaction(&pending.txid));
+        drop(mempool);
+
+        let status = self.node.get_status();
+        self.last_observed_height = status.best_height;
+        self.last_observed_mempool_size = status.mempool_size;
     }
 
     fn current_send_preview(&self) -> Result<Option<TransactionPreview>, String> {
@@ -825,6 +1129,7 @@ impl WalletApp {
 
     fn show_balance_tab(&mut self, ui: &mut egui::Ui) {
         let status = self.node.get_status();
+        let connected_peers = self.connected_peer_count(&status);
         ui.columns(2, |columns| {
             section_card(&mut columns[0], "Wallet Overview", |ui| {
                 ui.label(format!("Address: {}", self.wallet.address));
@@ -859,8 +1164,7 @@ impl WalletApp {
                 if ui.button("Generate New Wallet").clicked() {
                     self.node.stop_continuous_mining();
                     self.wallet = Wallet::new();
-                    self.show_seed_phrase = false;
-                    self.show_private_key = false;
+                    self.clear_sensitive_wallet_views();
                     if let Err(err) = self.wallet.save_to_file(&self.wallet_state_path, &self.wallet_password) {
                         self.message = err;
                     } else {
@@ -876,7 +1180,7 @@ impl WalletApp {
 
             section_card(&mut columns[1], "Node Overview", |ui| {
                 ui.label(format!("Node Height: {}", status.best_height));
-                ui.label(format!("Connected Peers: {}", status.connected_peers));
+                ui.label(format!("Connected Peers: {}", connected_peers));
                 ui.label(format!("Mempool Size: {}", status.mempool_size));
                 ui.label(format!(
                     "Consensus Threshold: {}",
@@ -1061,6 +1365,7 @@ impl WalletApp {
             let txid = preview.transaction.txid();
             match self.node.submit_transaction(preview.transaction.clone()) {
                 Ok(()) => {
+                    self.broadcast_transaction_to_peers(preview.transaction.clone());
                     self.wallet.add_transaction(preview.transaction.clone());
                     self.pending_transfers.push(PendingTransfer {
                         txid,
@@ -1123,6 +1428,7 @@ impl WalletApp {
                         }
                         if ui.button("Hide Seed Phrase").clicked() {
                             self.show_seed_phrase = false;
+                            self.message = "Seed phrase hidden".to_string();
                         }
                     });
                 } else if ui.button("Reveal Seed Phrase").clicked() {
@@ -1145,6 +1451,7 @@ impl WalletApp {
                         }
                         if ui.button("Hide Private Key").clicked() {
                             self.show_private_key = false;
+                            self.message = "Private key hidden".to_string();
                         }
                     });
                 } else if ui.button("Reveal Private Key").clicked() {
@@ -1185,8 +1492,7 @@ impl WalletApp {
                     match Wallet::load_from_file(&self.wallet_backup_path, &self.wallet_password) {
                         Ok(wallet) => {
                             self.wallet = wallet;
-                            self.show_seed_phrase = false;
-                            self.show_private_key = false;
+                            self.clear_sensitive_wallet_views();
                             if let Err(err) = self.wallet.save_to_file(&self.wallet_state_path, &self.wallet_password) {
                                 self.message = err;
                             } else {
@@ -1212,8 +1518,7 @@ impl WalletApp {
                     Ok(wallet) => {
                         self.node.stop_continuous_mining();
                         self.wallet = wallet;
-                        self.show_seed_phrase = false;
-                        self.show_private_key = false;
+                        self.clear_sensitive_wallet_views();
                         if let Err(err) = self.wallet.save_to_file(&self.wallet_state_path, &self.wallet_password) {
                             self.message = err;
                         } else {
@@ -1237,6 +1542,7 @@ impl WalletApp {
             section_card(&mut columns[0], "Mining Control", |ui| {
                 ui.label(format!("Mining Address: {}", self.wallet.address));
                 ui.label(format!("Mining Active: {}", mining.active));
+                ui.label(format!("Workers In Use: {}", mining.worker_count));
                 ui.label(format!("Hash Rate: {:.0} H/s", mining.hash_rate));
                 ui.label(format!("Total Hashes: {}", mining.total_hashes));
                 if let Some(last_block_hash) = mining.last_block_hash {
@@ -1250,31 +1556,49 @@ impl WalletApp {
                     ui.text_edit_singleline(&mut self.mining_worker_count);
                 });
                 ui.checkbox(&mut self.mine_empty_blocks, "Mine empty blocks");
+                ui.small("Default worker count keeps one CPU core free so the GUI stays responsive while mining.");
 
                 ui.horizontal(|ui| {
                     if ui.button("Start Mining").clicked() {
                         match self.mining_worker_count.trim().parse::<usize>() {
-                            Ok(worker_count) => match self.node.start_continuous_mining(
+                            Ok(worker_count) => {
+                                let requested_worker_count = worker_count.max(1);
+                                let safe_worker_count = thread::available_parallelism()
+                                    .map(|parallelism| {
+                                        requested_worker_count
+                                            .min(parallelism.get().saturating_sub(1).max(1))
+                                    })
+                                    .unwrap_or(requested_worker_count);
+                                match self.node.start_continuous_mining(
                                 &self.wallet.address_bytes(),
                                 MiningSettings {
-                                    worker_count: worker_count.max(1),
+                                    worker_count: safe_worker_count,
                                     mine_empty_blocks: self.mine_empty_blocks,
                                 },
-                            ) {
-                                Ok(()) => {
-                                    let p2p_status = if self.p2p_manager.is_some() {
-                                        " (P2P networking active)"
-                                    } else {
-                                        ""
-                                    };
-                                    self.message = format!(
-                                        "Continuous mining started with {} worker(s){}",
-                                        worker_count.max(1),
-                                        p2p_status
-                                    );
+                                ) {
+                                    Ok(()) => {
+                                        let p2p_status = if self.p2p_manager.is_some() {
+                                            " (P2P networking active)"
+                                        } else {
+                                            ""
+                                        };
+                                        self.message = if safe_worker_count != requested_worker_count {
+                                            format!(
+                                                "Continuous mining started with {} worker(s){} to keep the GUI responsive",
+                                                safe_worker_count,
+                                                p2p_status
+                                            )
+                                        } else {
+                                            format!(
+                                                "Continuous mining started with {} worker(s){}",
+                                                safe_worker_count,
+                                                p2p_status
+                                            )
+                                        };
+                                    }
+                                    Err(err) => self.message = err,
                                 }
-                                Err(err) => self.message = err,
-                            },
+                            }
                             Err(_) => {
                                 self.message = "Worker count must be a whole number".to_string();
                             }
@@ -1366,11 +1690,27 @@ impl WalletApp {
     }
 
     fn show_network_tab(&mut self, ui: &mut egui::Ui) {
+        let status = self.node.get_status();
+        let connected_peers = self.connected_peer_count(&status);
+        let peer_snapshot = self
+            .p2p_manager
+            .as_ref()
+            .map(|manager| manager.peers_now())
+            .unwrap_or_default();
+        let best_known_peer_height = peer_snapshot
+            .iter()
+            .map(|peer| peer.best_height)
+            .max()
+            .unwrap_or(0);
+        let blocks_to_sync = best_known_peer_height.saturating_sub(status.best_height);
+        let sync_in_progress = self.sync_in_progress.load(Ordering::SeqCst);
+
         section_card(ui, "P2P Network Status", |ui| {
             if self.p2p_manager.is_some() {
                 ui.label("P2P Status: Listening on 127.0.0.1:30303 (localhost only)");
-                ui.label(format!("Connected Peers: {}", self.peer_count));
-                ui.label("Last Block Received: Genesis");
+                ui.label(format!("Connected Peers: {}", connected_peers));
+                ui.label(format!("Best Known Peer Height: {}", best_known_peer_height));
+                ui.label(format!("Local Height: {}", status.best_height));
                 ui.small("GUI mode listens on localhost for security. Use CLI mode with --listen 0.0.0.0:30303 for network-accessible P2P.");
             } else {
                 ui.label("P2P network not initialized");
@@ -1380,11 +1720,30 @@ impl WalletApp {
         ui.add_space(12.0);
 
         section_card(ui, "Block Synchronization", |ui| {
-            ui.label("Synchronization Status: Ready");
-            ui.label("Blocks to sync: 0");
-            ui.label("Last sync: Never");
+            ui.label(format!(
+                "Synchronization Status: {}",
+                if sync_in_progress {
+                    "Running"
+                } else {
+                    "Auto-sync enabled"
+                }
+            ));
+            ui.label(format!("Blocks to sync: {}", blocks_to_sync));
+            ui.label("Automatic sync runs every 5 seconds while peers are connected.");
             if ui.button("Sync Blocks from Peers").clicked() {
-                self.message = "Block sync initiated".to_string();
+                self.queue_block_sync(true);
+            }
+            if ui.button("Reset Local Blockchain to Genesis").clicked() {
+                match self.node.reset_to_genesis() {
+                    Ok(()) => {
+                        self.pending_transfers.clear();
+                        self.last_notified_block_hash = None;
+                        self.refresh_wallet_state();
+                        self.message =
+                            "Local blockchain reset to the genesis block".to_string();
+                    }
+                    Err(err) => self.message = err,
+                }
             }
         });
 
@@ -1395,6 +1754,36 @@ impl WalletApp {
             ui.label("Max Peers: 16");
             ui.label("Peer Timeout: 5 minutes");
             ui.small("For production deployments, use CLI mode: cargo run -- node p2p --listen 0.0.0.0:30303 --bootstrap <PEER_ADDR>");
+        });
+
+        ui.add_space(12.0);
+
+        section_card(ui, "Connected Peer List", |ui| {
+            if peer_snapshot.is_empty() {
+                ui.small("No live peers connected yet.");
+                return;
+            }
+
+            egui::ScrollArea::vertical()
+                .id_source("peer_list_scroll")
+                .max_height(220.0)
+                .show(ui, |ui| {
+                    for peer in peer_snapshot {
+                        let last_seen = peer
+                            .last_seen
+                            .elapsed()
+                            .unwrap_or_default()
+                            .as_secs();
+                        ui.monospace(format!(
+                            "{} | height {} | v{} | last seen {}s ago | conn {}",
+                            peer.address,
+                            peer.best_height,
+                            peer.version,
+                            last_seen,
+                            peer.connection_addr
+                        ));
+                    }
+                });
         });
     }
 }
@@ -1421,6 +1810,49 @@ fn load_logo_texture(ctx: &egui::Context) -> Option<egui::TextureHandle> {
         filtered.as_raw(),
     );
     Some(ctx.load_texture("blindeye-logo", color_image, egui::TextureOptions::LINEAR))
+}
+
+fn paint_rotating_texture(
+    painter: &egui::Painter,
+    texture: &egui::TextureHandle,
+    center: egui::Pos2,
+    size: f32,
+    angle: f32,
+    tint: egui::Color32,
+) {
+    let half = size * 0.5;
+    let rotation = egui::emath::Rot2::from_angle(angle);
+    let offsets = [
+        egui::vec2(-half, -half),
+        egui::vec2(half, -half),
+        egui::vec2(half, half),
+        egui::vec2(-half, half),
+    ];
+    let uvs = [
+        egui::pos2(0.0, 0.0),
+        egui::pos2(1.0, 0.0),
+        egui::pos2(1.0, 1.0),
+        egui::pos2(0.0, 1.0),
+    ];
+
+    let mut mesh = egui::Mesh::with_texture(texture.id());
+    for (offset, uv) in offsets.into_iter().zip(uvs.into_iter()) {
+        mesh.vertices.push(egui::epaint::Vertex {
+            pos: center + rotation * offset,
+            uv,
+            color: tint,
+        });
+    }
+    mesh.indices.extend_from_slice(&[0, 1, 2, 0, 2, 3]);
+    painter.add(egui::Shape::mesh(mesh));
+}
+
+fn ease_out_cubic(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+fn ease_in_cubic(t: f32) -> f32 {
+    t.powi(3)
 }
 
 fn apply_theme(ctx: &egui::Context) {
@@ -1486,8 +1918,7 @@ fn section_card(ui: &mut egui::Ui, title: &str, add_contents: impl FnOnce(&mut e
         });
 }
 
-fn nav_button(ui: &mut egui::Ui, active_tab: &mut Tab, tab: Tab, label: &str) {
-    let is_active = *active_tab == tab;
+fn nav_button(ui: &mut egui::Ui, is_active: bool, label: &str) -> bool {
     let button = egui::Button::new(egui::RichText::new(label).strong().color(if is_active {
         COLOR_NEAR_BLACK
     } else {
@@ -1504,9 +1935,7 @@ fn nav_button(ui: &mut egui::Ui, active_tab: &mut Tab, tab: Tab, label: &str) {
         if is_active { COLOR_CYAN } else { COLOR_STROKE },
     ));
 
-    if ui.add(button).clicked() {
-        *active_tab = tab;
-    }
+    ui.add(button).clicked()
 }
 
 fn shorten_middle(value: &str, edge: usize) -> String {

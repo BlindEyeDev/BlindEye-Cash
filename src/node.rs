@@ -213,10 +213,13 @@ impl Node {
     pub fn mine_one_block(&self, miner_address: &[u8]) -> Result<Block, String> {
         let template = self.create_block_template(miner_address)?;
         let running = Arc::new(AtomicBool::new(true));
+        let session_id = Arc::new(AtomicU64::new(1));
         let block = crate::mining::mine_template_parallel(
             template,
             1,
             running,
+            session_id,
+            1,
             Arc::new(AtomicU64::new(0)),
         )
         .map_err(|err| format!("Mining failed: {err:?}"))?;
@@ -253,6 +256,18 @@ impl Node {
 
     pub fn add_block(&self, block: Block) -> Result<(), String> {
         self.submit_block(block)
+    }
+
+    pub fn blocks_from_height(&self, from_height: u64, count: u32) -> Vec<Block> {
+        let blockchain = self.blockchain.lock().unwrap();
+        blockchain
+            .best_chain
+            .iter()
+            .filter_map(|hash| blockchain.blocks.get(hash))
+            .filter(|block| block.header.height >= from_height)
+            .take(count as usize)
+            .cloned()
+            .collect()
     }
 
     pub fn get_status(&self) -> NodeStatus {
@@ -296,6 +311,17 @@ impl Node {
             .fund_address_for_testing(address, amount)
             .map_err(|e| e.to_string())?;
         drop(blockchain);
+        self.save_state()
+    }
+
+    pub fn reset_to_genesis(&self) -> Result<(), String> {
+        self.stop_continuous_mining();
+        self.rpc_server.stop();
+        *self.blockchain.lock().unwrap() = Blockchain::new();
+        *self.mempool.lock().unwrap() = Mempool::new(10000, 1);
+        self.peer_manager.lock().unwrap().peers.clear();
+        self.miner
+            .push_log("Local blockchain reset to genesis block".to_string());
         self.save_state()
     }
 }
