@@ -73,4 +73,5 @@ curl -X POST "https://yourdomain.com/rpc-registry.php?action=proxy" \
 - The BlindEye node RPC is raw TCP JSON-RPC right now, not a browser-native HTTP JSON-RPC server.
 - This registry file makes a website usable as a public directory and HTTP bridge without needing SSH or a VPS.
 - Nodes can now appear in the registry even before the website can reach them directly, which helps with NAT or delayed port-forward changes.
+- If a miner publishes `localhost` or a private/LAN IP, the registry will now try to rewrite that host to the request's public IP while keeping the original port.
 - For public use, add rate limiting or a secret publish token before opening it broadly.

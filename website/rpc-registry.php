@@ -36,6 +36,8 @@ try {
                 ], 400);
             }
 
+            $rpcUrl = normalize_registry_publish_url($rpcUrl);
+
             $verified = false;
             $lastError = '';
             try {
@@ -373,6 +375,82 @@ function canonical_rpc_url(string $rpcUrl): string
         $parts['host'],
         (int)$parts['port']
     );
+}
+
+function normalize_registry_publish_url(string $rpcUrl): string
+{
+    $canonical = canonical_rpc_url($rpcUrl);
+    $parts = parse_url($canonical);
+    if (!is_array($parts) || empty($parts['host']) || empty($parts['port'])) {
+        return $canonical;
+    }
+
+    $host = (string)$parts['host'];
+    if (!host_needs_public_rewrite($host)) {
+        return $canonical;
+    }
+
+    $publicIp = request_public_ip();
+    if ($publicIp === null) {
+        return $canonical;
+    }
+
+    $scheme = (string)($parts['scheme'] ?? 'tcp');
+    $port = (int)$parts['port'];
+    return sprintf('%s://%s:%d', $scheme, $publicIp, $port);
+}
+
+function host_needs_public_rewrite(string $host): bool
+{
+    $lower = strtolower(trim($host));
+    if ($lower === '' || $lower === 'localhost') {
+        return true;
+    }
+
+    if (filter_var($lower, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6) === false) {
+        return false;
+    }
+
+    return filter_var(
+        $lower,
+        FILTER_VALIDATE_IP,
+        FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+    ) === false;
+}
+
+function request_public_ip(): ?string
+{
+    $candidates = [];
+    $headerNames = [
+        'HTTP_CF_CONNECTING_IP',
+        'HTTP_X_FORWARDED_FOR',
+        'HTTP_X_REAL_IP',
+        'REMOTE_ADDR',
+    ];
+
+    foreach ($headerNames as $headerName) {
+        if (empty($_SERVER[$headerName])) {
+            continue;
+        }
+        foreach (explode(',', (string)$_SERVER[$headerName]) as $candidate) {
+            $trimmed = trim($candidate);
+            if ($trimmed !== '') {
+                $candidates[] = $trimmed;
+            }
+        }
+    }
+
+    foreach ($candidates as $candidate) {
+        if (filter_var(
+            $candidate,
+            FILTER_VALIDATE_IP,
+            FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE
+        ) !== false) {
+            return $candidate;
+        }
+    }
+
+    return null;
 }
 
 function json_response(array $payload, int $status = 200): void

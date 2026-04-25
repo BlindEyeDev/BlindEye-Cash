@@ -42,20 +42,42 @@ struct RegistryPublishResponse {
 }
 
 pub fn fetch_public_rpcs(registry_url: &str) -> Result<Vec<PublicRpcEndpoint>, String> {
-    let request_url = registry_action_url(registry_url, "status")?;
-    let response = ureq::get(&request_url)
+    let status_url = registry_action_url(registry_url, "status")?;
+    let response = ureq::get(&status_url)
         .call()
         .map_err(|err| format!("Unable to reach RPC registry: {err}"))?;
-    let parsed: RegistryListResponse = response
+    let status_parsed: RegistryListResponse = response
         .into_json()
         .map_err(|err| format!("RPC registry returned invalid JSON: {err}"))?;
-    if !parsed.ok {
+    if !status_parsed.ok {
         return Err(non_empty_or(
-            parsed.error,
+            status_parsed.error,
             "RPC registry reported a failure".to_string(),
         ));
     }
-    Ok(parsed.endpoints)
+
+    let list_url = registry_action_url(registry_url, "list")?;
+    let list_response = ureq::get(&list_url)
+        .call()
+        .map_err(|err| format!("Unable to reach RPC registry cache: {err}"))?;
+    let list_parsed: RegistryListResponse = list_response
+        .into_json()
+        .map_err(|err| format!("RPC registry cache returned invalid JSON: {err}"))?;
+    if !list_parsed.ok {
+        return Err(non_empty_or(
+            list_parsed.error,
+            "RPC registry cache reported a failure".to_string(),
+        ));
+    }
+
+    let mut merged = std::collections::BTreeMap::<String, PublicRpcEndpoint>::new();
+    for endpoint in list_parsed.endpoints {
+        merged.insert(endpoint.rpc_url.clone(), endpoint);
+    }
+    for endpoint in status_parsed.endpoints {
+        merged.insert(endpoint.rpc_url.clone(), endpoint);
+    }
+    Ok(merged.into_values().collect())
 }
 
 pub fn publish_public_rpc(
