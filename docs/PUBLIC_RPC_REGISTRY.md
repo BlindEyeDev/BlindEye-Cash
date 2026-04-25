@@ -28,7 +28,8 @@ The file creates `rpc_registry_data.json` beside itself on first successful publ
 
 In the BlindEye Mining tab:
 
-- paste your hosted registry URL into `Registry URL`
+- the app now defaults to `https://comboss.co.uk/rpc-registry.php`
+- paste your hosted registry URL into `Registry URL` only if you want to override that default
 - click `Refresh Public RPCs` to discover public endpoints
 - start remote RPC on `0.0.0.0:18443`
 - click `Publish My RPC` or leave auto-publish enabled

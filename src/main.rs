@@ -43,6 +43,7 @@ const COLOR_BLUE: egui::Color32 = egui::Color32::from_rgb(31, 94, 179);
 const COLOR_CYAN: egui::Color32 = egui::Color32::from_rgb(92, 207, 224);
 const COLOR_SILVER: egui::Color32 = egui::Color32::from_rgb(224, 228, 236);
 const COLOR_MUTED: egui::Color32 = egui::Color32::from_rgb(144, 166, 196);
+const DEFAULT_PUBLIC_RPC_REGISTRY_URL: &str = "https://comboss.co.uk/rpc-registry.php";
 
 #[derive(Parser)]
 #[command(name = "blindeye")]
@@ -545,7 +546,8 @@ impl Default for WalletApp {
             wallet_backup_path: wallet_backup_path.display().to_string(),
             rpc_bind_addr: "127.0.0.1:18443".to_string(),
             rpc_advertise_url: String::new(),
-            rpc_registry_url: std::env::var("BLINDEYE_RPC_REGISTRY_URL").unwrap_or_default(),
+            rpc_registry_url: std::env::var("BLINDEYE_RPC_REGISTRY_URL")
+                .unwrap_or_else(|_| DEFAULT_PUBLIC_RPC_REGISTRY_URL.to_string()),
             auto_publish_rpc: true,
             discovered_public_rpcs: Vec::new(),
             mining_worker_count: MiningSettings::default().worker_count.to_string(),
@@ -893,6 +895,17 @@ impl WalletApp {
         Ok(response)
     }
 
+    fn maybe_publish_current_rpc_to_registry(&mut self, event: &str) -> Option<String> {
+        if !self.auto_publish_rpc || self.rpc_registry_url.trim().is_empty() {
+            return None;
+        }
+
+        match self.publish_current_rpc_to_registry() {
+            Ok(result) => Some(format!("Registry updated after {}. {}", event, result)),
+            Err(err) => Some(format!("Registry publish skipped after {}: {}", event, err)),
+        }
+    }
+
     fn queue_block_sync(&mut self, manual: bool) {
         let Some(p2p_manager) = &self.p2p_manager else {
             if manual {
@@ -1000,6 +1013,11 @@ impl WalletApp {
                         block.header.bits,
                         self.wallet.balance_bec()
                     );
+                    if let Some(registry_note) =
+                        self.maybe_publish_current_rpc_to_registry("accepted block")
+                    {
+                        self.message = format!("{} {}", self.message, registry_note);
+                    }
                 }
             }
         } else if height_changed && status.best_height > previous_height {
@@ -1735,6 +1753,12 @@ impl WalletApp {
                                                 p2p_status
                                             )
                                         };
+                                        if let Some(registry_note) = self
+                                            .maybe_publish_current_rpc_to_registry("mining start")
+                                        {
+                                            self.message =
+                                                format!("{} {}", self.message, registry_note);
+                                        }
                                     }
                                     Err(err) => self.message = err,
                                 }

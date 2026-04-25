@@ -99,8 +99,9 @@ cargo run --release -- mining rpc 0.0.0.0:18443
 ```
 
 Public RPC discovery and publishing:
-- Host [website/rpc-registry.php](website/rpc-registry.php) on your website.
-- Put that URL into the GUI Mining tab `Registry URL` field.
+- Default registry: `https://comboss.co.uk/rpc-registry.php`
+- Host [website/rpc-registry.php](website/rpc-registry.php) on your website if you want your own registry.
+- Put your registry URL into the GUI Mining tab `Registry URL` field if you want to override the default.
 - Use `Refresh Public RPCs` to discover open endpoints.
 - Use `Publish My RPC` to publish your own remote RPC there.
 - See [docs/PUBLIC_RPC_REGISTRY.md](docs/PUBLIC_RPC_REGISTRY.md) for setup details.
